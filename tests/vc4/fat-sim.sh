@@ -29,8 +29,9 @@ inc=(-I"$fw/bootcode" -I"$fw" -I"$fw/vc4_include" -D__VIDEOCORE4__ -DMONITOR=1)
 "${prefix}gcc" -std=c11 -Os -ffreestanding -fno-builtin "${inc[@]}" \
 	-fno-jump-tables -c "$fw/bootcode/fat.c" -o "$t/fat-gcc.o"
 "${prefix}gcc" -O1 -fno-jump-tables "${inc[@]}" -c "$here/fat-sim-main.c" -o "$t/main.o"
+"${prefix}gcc" -O1 -fno-jump-tables -c "$here/sim-rt.c" -o "$t/rt.o"
 for c in tcc gcc; do
-	"${prefix}gcc" -T vc4-sim.ld "$t/main.o" "$t/fat-$c.o" -o "$t/sim-$c.elf"
+	"${prefix}gcc" -T vc4-sim.ld "$t/main.o" "$t/rt.o" "$t/fat-$c.o" -o "$t/sim-$c.elf"
 	"${prefix}objcopy" -O binary "$t/sim-$c.elf" "$t/sim-$c.bin"
 	[ "$(stat -c %s "$t/sim-$c.bin")" -lt $((16 << 20)) ]
 done

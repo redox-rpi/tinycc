@@ -297,7 +297,15 @@ ST_FUNC void load(int r, SValue *sv)
         } else {
             tcc_error("VC4: load: unhandled lvalue %x", fr);
         }
-        vc4_ldst(sz, r, base, off);
+        if (sz == VC4_LDSB) {
+            /* GCC uses the 32-bit ldsb, but resim does not know it; ldb and
+               a shift pair works everywhere and is as long */
+            vc4_ldst(VC4_LDB, r, base, off);
+            vc4_alu16i(VC4_SHL, r, 24);
+            vc4_alu16i(VC4_ASR, r, 24);
+        } else {
+            vc4_ldst(sz, r, base, off);
+        }
     } else if (v == VT_CONST) {
         if (is_float(sv->type.t))
             tcc_error("VC4: floating point not supported yet");
@@ -425,29 +433,57 @@ ST_FUNC int gfunc_sret(CType *vt, int variadic, CType *ret, int *ret_align, int 
     return 0;
 }
 
+/* Variadic functions: the prologue first stores r0-r5 just below the
+   caller's stack arguments (as GCC does), so that all arguments lie in one
+   row in memory and va_list is a plain pointer (the i386 definition in
+   tccdefs.h):
+       r7 + 0, 4, 8      saved r6, r7, lr
+       r7 + 12 .. 32     r0 .. r5
+       r7 + 36 ...       stack arguments                                  */
+static int func_regsave;
+
 ST_FUNC void gfunc_prolog(Sym *func_sym)
 {
     CType *func_type = &func_sym->type;
     Sym *sym = func_type->ref;
-    int n = 0, addr = 12; /* saved r6, r7, lr */
+    int n = 0, addr, i;
 
-    if (func_var)
-        tcc_error("VC4: variadic functions not supported yet");
     loc = 0;
     func_vc = 0;
-    vc4_push_r6_r7_lr();
+    func_regsave = func_var;
+    if (func_regsave) {
+        /* r0-r5 right below the stack arguments, so va_arg walks both;
+           r6, r7, lr saved one by one in a layout of our own (the order
+           stm uses is not documented) */
+        vc4_add_imm(VC4_SP, VC4_SP, -36);
+        for (i = 0; i < 6; i++)
+            vc4_ldst(VC4_ST, i, VC4_SP, 12 + i * 4);
+        vc4_ldst(VC4_ST, 6, VC4_SP, 0);
+        vc4_ldst(VC4_ST, FP, VC4_SP, 4);
+        vc4_ldst(VC4_ST, VC4_LR, VC4_SP, 8);
+    } else {
+        vc4_push_r6_r7_lr();
+    }
     vc4_mov_reg(FP, VC4_SP);
     func_sub_sp_offset = ind;
     vc4_add48(VC4_SP, VC4_SP, 0); /* patched by gfunc_epilog */
+    addr = func_regsave ? 36 : 12;
 
     if ((func_vt.t & VT_BTYPE) == VT_STRUCT) {
-        loc -= 4;
-        vc4_ldst(VC4_ST, n++, FP, loc);
-        func_vc = loc;
+        if (func_regsave) {
+            func_vc = 12;
+        } else {
+            loc -= 4;
+            vc4_ldst(VC4_ST, 0, FP, loc);
+            func_vc = loc;
+        }
+        n++;
     }
     while ((sym = sym->next) != NULL) {
         vc4_check_arg_type(&sym->type);
-        if (n < 6) {
+        if (n < 6 && func_regsave) {
+            gfunc_set_param(sym, 12 + 4 * n++, 0);
+        } else if (n < 6) {
             loc -= 4;
             vc4_ldst(VC4_ST, n++, FP, loc);
             gfunc_set_param(sym, loc, 0);
@@ -463,7 +499,15 @@ ST_FUNC void gfunc_epilog(void)
     int v = (-loc + 3) & -4, saved_ind;
 
     vc4_mov_reg(VC4_SP, FP);
-    vc4_pop_r6_r7_pc();
+    if (func_regsave) {
+        vc4_ldst(VC4_LD, TREG_R6, VC4_SP, 0);
+        vc4_ldst(VC4_LD, VC4_LR, VC4_SP, 8);
+        vc4_ldst(VC4_LD, FP, VC4_SP, 4);
+        vc4_add_imm(VC4_SP, VC4_SP, 36);
+        vc4_rts();
+    } else {
+        vc4_pop_r6_r7_pc();
+    }
     saved_ind = ind;
     ind = func_sub_sp_offset;
     vc4_add48(VC4_SP, VC4_SP, -v);
