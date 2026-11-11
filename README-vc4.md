@@ -19,6 +19,7 @@ variadic function definitions, VLAs, inline asm or assembler yet.
 | `vc4-link.c` | relocations (`R_VC4_32`, `IMM32`, `PCREL27_MUL2`, `PCREL23_MUL2`, `PCREL27`) |
 | `tests/vc4/enc-test.py` | every encoder form against `vc4-elf-objdump` and, where it picks the same form, `vc4-elf-as` |
 | `tests/vc4/fat-build.sh` | compiles the firmware's `bootcode/fat.c`, compares size with GCC, links it into the bootcode build |
+| `tests/vc4/fat-sim.sh`, `fat-sim-main.c` | runs TCC's `fat.c` in the resim simulator (vc4emul) on FAT16 and FAT32 card images; every file must load with the right size and checksum |
 
 ## Build and test
 
@@ -27,7 +28,13 @@ variadic function definitions, VLAs, inline asm or assembler yet.
 make vc4-tcc
 python3 tests/vc4/enc-test.py /path/to/prefix/bin/vc4-elf-
 tests/vc4/fat-build.sh /path/to/rpi-open-firmware /path/to/prefix/bin/vc4-elf-
+tests/vc4/fat-sim.sh /path/to/rpi-open-firmware /path/to/prefix/bin/vc4-elf- /path/to/vc4emul
 ```
+
+vc4emul comes from resim (github.com/puppeh/resim, the vc4-toolchain
+submodule). With CMake 4 and a current g++ it needs
+`-DCMAKE_POLICY_VERSION_MINIMUM=3.5` and a compiler wrapper that adds
+`-include cstdint -include cstring -include cassert`.
 
 ## Licence
 
