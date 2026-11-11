@@ -942,11 +942,11 @@ redo_start:
                 else if (parse_flags & PARSE_FLAG_ASM_FILE)
                     p = parse_line_comment(p - 1);
             }
-#if !defined(TCC_TARGET_ARM) && !defined(TCC_TARGET_ARM64)
+#if !defined(TCC_TARGET_ARM) && !defined(TCC_TARGET_ARM64) && !defined(TCC_TARGET_VC4)
             else if (parse_flags & PARSE_FLAG_ASM_FILE)
                 p = parse_line_comment(p - 1);
 #else
-            /* ARM/ARM64 assembly uses '#' for constants */
+            /* ARM/ARM64/VC4 assembly uses '#' for constants */
 #endif
             break;
 _default:
@@ -2634,7 +2634,7 @@ maybe_newline:
                 p++;
                 tok = TOK_TWOSHARPS;
             } else {
-#if !defined(TCC_TARGET_ARM) && !defined(TCC_TARGET_ARM64)
+#if !defined(TCC_TARGET_ARM) && !defined(TCC_TARGET_ARM64) && !defined(TCC_TARGET_VC4)
                 if (parse_flags & PARSE_FLAG_ASM_FILE) {
                     p = parse_line_comment(p - 1);
                     goto redo_no_start;

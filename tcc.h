@@ -392,6 +392,7 @@ extern long double strtold (const char *__nptr, char **__endptr);
 #elif defined(TCC_TARGET_VC4)
 # include "vc4-gen.c"
 # include "vc4-link.c"
+# include "vc4-asm.c"
 #else
 #error unknown target
 #endif
@@ -532,7 +533,7 @@ struct FuncAttr {
     func_dtor   : 1, /* attribute((destructor)) */
     func_args   : 8, /* PE __stdcall args */
     func_alwinl : 1, /* always_inline */
-    xxxx        : 15;
+    func_sect   : 15; /* section number from attribute((section)), 0 = none */
 };
 
 /* symbol management */

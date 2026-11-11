@@ -6,8 +6,9 @@
 #
 #   tests/vc4/bootcode-build.sh <rpi-open-firmware checkout> [vc4-prefix]
 #
-#   TCC_FILES="fat"   which files TCC compiles (default: every C file but
-#                     monitor.c, whose inline asm TCC cannot assemble yet)
+#   TCC_FILES="fat"   which files TCC compiles (default: every C file and
+#                     every .S file, so only the link is left to vc4-elf-ld;
+#                     names with .S are assembled, e.g. "fat start.S")
 #   KEEP=dir          keep bootcode-tcc.{elf,bin} and the TCC objects there
 #
 # The checkout needs bootcode/ (branch fat-boot or later) and the upstream
@@ -26,20 +27,26 @@ trap 'rm -rf "$out"' EXIT
 [ -e "$fw/firmware" ] || ln -s . "$fw/firmware"
 cd "$fw/bootcode"
 make -s MONITOR=1 CROSS_COMPILE="$prefix" >/dev/null
-files=${TCC_FILES:-$(cd build && ls *.c.o | sed 's/\.c\.o$//' | grep -vx monitor)}
+files=${TCC_FILES:-$(cd build && ls *.c.o *.S.o | sed 's/\.c\.o$//; s/\.o$//')}
 
 text() { "${prefix}size" "$1" | awk 'NR==2 { print $1 }'; }
 printf '%-10s %8s %8s %6s\n' file "GCC -Os" TCC factor
-gt=0 tt=0 objs=$(cd build && ls *.o)
+gt=0 tt=0 objs=$(cd build && ls *.c.o *.S.o)
 for f in $files; do
-	"$tcc_dir/vc4-tcc" -B"$tcc_dir" -nostdinc -I"$tcc_dir/include" -I"$newlib" \
-		-I. -I.. -I../vc4_include -D__VIDEOCORE4__ -DMONITOR=1 \
-		-DBUILD_ID='"tcc"' -c "$f.c" -o "$out/$f-tcc.o"
-	g=$(text "build/$f.c.o") t=$(text "$out/$f-tcc.o")
+	case $f in
+	*.S)	src=$f obj=build/$f.o
+		"$tcc_dir/vc4-tcc" -B"$tcc_dir" -I. -I.. -I../vc4_include \
+			-D__VIDEOCORE4__ -c "$f" -o "$out/$f-tcc.o" ;;
+	*)	src=$f.c obj=build/$f.c.o
+		"$tcc_dir/vc4-tcc" -B"$tcc_dir" -nostdinc -I"$tcc_dir/include" \
+			-I"$newlib" -I. -I.. -I../vc4_include -D__VIDEOCORE4__ \
+			-DMONITOR=1 -DBUILD_ID='"tcc"' -c "$src" -o "$out/$f-tcc.o" ;;
+	esac
+	g=$(text "$obj") t=$(text "$out/$f-tcc.o")
 	gt=$((gt + g)) tt=$((tt + t))
 	awk -v f="$f" -v g="$g" -v t="$t" \
 		'BEGIN { printf "%-10s %8d %8d %6.2f\n", f, g, t, t / g }'
-	objs=$(echo "$objs" | grep -vx "$f.c.o")
+	objs=$(echo "$objs" | grep -vx "${obj#build/}" || true)
 done
 awk -v g="$gt" -v t="$tt" 'BEGIN { printf "%-10s %8d %8d %6.2f\n", "total", g, t, t / g }'
 

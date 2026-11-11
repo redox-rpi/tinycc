@@ -56,6 +56,7 @@
 #elif defined(TCC_TARGET_VC4)
 #include "vc4-gen.c"
 #include "vc4-link.c"
+#include "vc4-asm.c"
 #else
 #error unknown target
 #endif

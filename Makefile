@@ -217,7 +217,7 @@ arm64_FILES = $(CORE_FILES) arm64-gen.c arm64-link.c arm64-asm.c arm64-tok.h
 arm64-osx_FILES = $(arm64_FILES) tccmacho.c
 arm64-win32_FILES = $(arm64_FILES) tccpe.c
 c67_FILES = $(CORE_FILES) c67-gen.c c67-link.c tcccoff.c
-vc4_FILES = $(CORE_FILES) vc4-gen.c vc4-link.c vc4-enc.h
+vc4_FILES = $(CORE_FILES) vc4-gen.c vc4-link.c vc4-enc.h vc4-asm.c
 riscv64_FILES = $(CORE_FILES) riscv64-gen.c riscv64-link.c riscv64-asm.c
 
 TCCDEFS_H$(subst yes,,$(CONFIG_predefs)) = tccdefs_.h

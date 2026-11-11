@@ -1197,6 +1197,8 @@ static void merge_symattr(struct SymAttr *sa, struct SymAttr *sa1)
 /* Merge function attributes.  */
 static void merge_funcattr(struct FuncAttr *fa, struct FuncAttr *fa1)
 {
+    if (fa1->func_sect && !fa->func_sect)
+      fa->func_sect = fa1->func_sect;
     if (fa1->func_call && !fa->func_call)
       fa->func_call = fa1->func_call;
     if (fa1->func_type && !fa->func_type)
@@ -4005,6 +4007,9 @@ redo:
             n = tcc_state->nb_sections;
             ad->section = find_section(tcc_state, astr);
             ad->new_section = n < tcc_state->nb_sections;
+            /* kept with the function type, so a definition after a
+               prototype with the attribute still goes there */
+            ad->f.func_sect = ad->section->sh_num;
             skip(')');
             break;
         case TOK_ALIAS1:
@@ -8962,9 +8967,14 @@ static int decl(int l)
                 } else {
                     /* compute text section */
                     cur_text_section = text_section;
+                    if (!ad.section && sym->type.ref->f.func_sect) {
+                        /* attribute((section)) on an earlier prototype */
+                        ad.section = tcc_state->sections[sym->type.ref->f.func_sect];
+                    }
                     if (ad.section) {
                         cur_text_section = ad.section;
-                        if (ad.new_section)
+                        /* new, or made by a prototype with the attribute */
+                        if (ad.new_section || !(ad.section->sh_flags & SHF_EXECINSTR))
                             ad.section->sh_flags = text_section->sh_flags;
                     }
                     gen_function(sym);

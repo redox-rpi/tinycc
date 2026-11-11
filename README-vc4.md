@@ -5,9 +5,10 @@ Plan, decisions and milestones: `docs/tcc-vc4.md` in
 redox-rpi/rpi-open-firmware (branch `redox-rpi`).
 
 **State: spike.** Integer subset (load/store, arithmetic, compares,
-branches, calls, frames, variadic functions, struct return). Every C file
-of the firmware's `bootcode/` but `monitor.c` compiles and links. No float,
-`long long`, struct arguments, VLAs, inline asm or assembler yet.
+branches, calls, frames, variadic functions, struct return), a VC4
+assembler for `.S` files and inline asm. The firmware's whole `bootcode/`
+(C and `.S`) builds with `vc4-tcc`; linking is still done by `vc4-elf-ld`.
+No float, `long long`, struct arguments or VLAs yet.
 `vc4-tcc -c` writes ELF objects (`EM_VIDEOCORE3`, RELA) that link with
 `vc4-elf-ld` from the vc4-toolchain; TCC's own linker is not wired up.
 
@@ -17,9 +18,11 @@ of the firmware's `bootcode/` but `monitor.c` compiles and links. No float,
 |---|---|
 | `vc4-enc.h` | instruction encoder (16/32/48-bit forms) |
 | `vc4-gen.c` | code generator; ABI as the vc4 GCC port |
+| `vc4-asm.c` | assembler: the common integer instructions in vc4 gas syntax, inline asm (`r`, `i`, `m` constraints, clobbers) |
 | `vc4-link.c` | relocations (`R_VC4_32`, `IMM32`, `PCREL27_MUL2`, `PCREL23_MUL2`, `PCREL27`) |
 | `tests/vc4/enc-test.py` | every encoder form against `vc4-elf-objdump` and, where it picks the same form, `vc4-elf-as` |
-| `tests/vc4/bootcode-build.sh` | compiles the firmware's `bootcode/` C files (all but `monitor.c`, or `TCC_FILES=…`), compares sizes with GCC `-Os` per file, links them into the bootcode build |
+| `tests/vc4/asm-test.sh`, `asm-test.S` | the assembler against `vc4-elf-as`: both objects linked at the same addresses must give the same bytes |
+| `tests/vc4/bootcode-build.sh` | compiles the firmware's `bootcode/` C and `.S` files (all, or `TCC_FILES=…`), compares sizes with GCC `-Os` per file, links them into the bootcode build |
 | `tests/vc4/abi-sim.sh`, `abi-test.c`, `abi-main.c` | ABI and code generation test: the host build and the TCC build run in resim must print the same |
 | `tests/vc4/sim-rt.c` | `printf` on the mini UART for test programs in resim |
 | `tests/vc4/fat-sim.sh`, `fat-sim-main.c` | runs TCC's `fat.c` in the resim simulator (vc4emul) on FAT16 and FAT32 card images; every file must load with the right size and checksum |
@@ -32,6 +35,7 @@ make vc4-tcc
 python3 tests/vc4/enc-test.py /path/to/prefix/bin/vc4-elf-
 tests/vc4/bootcode-build.sh /path/to/rpi-open-firmware /path/to/prefix/bin/vc4-elf-
 tests/vc4/abi-sim.sh /path/to/prefix/bin/vc4-elf- /path/to/vc4emul
+tests/vc4/asm-test.sh /path/to/prefix/bin/vc4-elf-
 tests/vc4/fat-sim.sh /path/to/rpi-open-firmware /path/to/prefix/bin/vc4-elf- /path/to/vc4emul
 ```
 
@@ -46,6 +50,18 @@ bytes with `ldb` and a shift pair. resim also lacks `switch` and
 `bitflip #imm`: newlib's `printf` and GCC's `fat.c` do not run there.
 `stm r6-r7,lr` stores lr at the top in resim; vc4-tcc's variadic
 prologue therefore saves r6, r7 and lr one by one.
+
+## Changes outside the VC4 files
+
+- `tccasm.c`: `.irp` (expanded on the source text, as gas does) and
+  `.incbin`; for VC4, `.align N` means 2^N bytes, as in the vc4 GNU
+  assembler.
+- `tccpp.c`: `#` starts an immediate in VC4 assembly, not a comment (as
+  for ARM).
+- `tccgen.c`, `tcc.h`: `__attribute__((section))` on a prototype also
+  applies to the function's later definition (GCC does this; TCC put the
+  code in `.text`), and a section that gets function code is marked
+  executable.
 
 ## Licence
 
