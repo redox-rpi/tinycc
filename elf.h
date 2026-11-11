@@ -268,6 +268,7 @@ typedef struct
 #define EM_TILEPRO	188		/* Tilera TILEPro */
 #define EM_TILEGX	191		/* Tilera TILE-Gx */
 #define EM_RISCV	243	        /* RISC-V */
+#define EM_VIDEOCORE3	137		/* Broadcom VideoCore III/IV (vc4 binutils) */
 #define EM_NUM		253
 
 /* If it is necessary to assign new unofficial EM_* values, please
@@ -2571,6 +2572,34 @@ typedef Elf32_Addr Elf32_Conflict;
 #define R_C60HI16      0x55       /* high 16 bit MVKH embedded */
 /* Keep this the last entry.  */
 #define R_C60_NUM      0x56
+
+/* Broadcom VideoCore IV (VPU) relocs: the numbers the vc4-toolchain
+   objects use, so that vc4-elf-ld links our objects. */
+#define R_VC4_NONE           0
+#define R_VC4_PCREL7_MUL2    1
+#define R_VC4_PCREL8_MUL2    2
+#define R_VC4_PCREL10_MUL2   3
+#define R_VC4_PCREL16        4
+#define R_VC4_PCREL23_MUL2   5
+#define R_VC4_PCREL27        6
+#define R_VC4_PCREL27_MUL2   7
+#define R_VC4_PCREL32        8
+#define R_VC4_IMM5_MUL4      9
+#define R_VC4_IMM5_1         10
+#define R_VC4_IMM5_2         11
+#define R_VC4_IMM6           12
+#define R_VC4_IMM6_MUL4      13
+#define R_VC4_IMM11          14
+#define R_VC4_IMM12          15
+#define R_VC4_IMM16          16
+#define R_VC4_IMM23          17
+#define R_VC4_IMM27          18
+#define R_VC4_IMM32          19
+#define R_VC4_IMM32_2        20
+#define R_VC4_8              21
+#define R_VC4_16             22
+#define R_VC4_32             23
+#define R_VC4_NUM            32
 
 /* IA-64 specific declarations.  */
 

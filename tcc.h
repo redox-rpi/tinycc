@@ -158,11 +158,13 @@ extern long double strtold (const char *__nptr, char **__endptr);
 /* #define TCC_TARGET_ARM64  *//* ARMv8 code generator */
 /* #define TCC_TARGET_C67    *//* TMS320C67xx code generator */
 /* #define TCC_TARGET_RISCV64 *//* risc-v code generator */
+/* #define TCC_TARGET_VC4    *//* VideoCore IV VPU code generator */
 
 /* default target is I386 */
 #if !defined(TCC_TARGET_I386) && !defined(TCC_TARGET_ARM) && \
     !defined(TCC_TARGET_ARM64) && !defined(TCC_TARGET_C67) && \
-    !defined(TCC_TARGET_X86_64) && !defined(TCC_TARGET_RISCV64)
+    !defined(TCC_TARGET_X86_64) && !defined(TCC_TARGET_RISCV64) && \
+    !defined(TCC_TARGET_VC4)
 # if defined __x86_64__
 #  define TCC_TARGET_X86_64
 # elif defined __arm__
@@ -387,6 +389,9 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # include "riscv64-gen.c"
 # include "riscv64-link.c"
 # include "riscv64-asm.c"
+#elif defined(TCC_TARGET_VC4)
+# include "vc4-gen.c"
+# include "vc4-link.c"
 #else
 #error unknown target
 #endif
@@ -398,6 +403,13 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define ELFCLASSW ELFCLASS64
 # define ElfW(type) Elf##64##_##type
 # define ELFW(type) ELF##64##_##type
+# define ElfW_Rel ElfW(Rela)
+# define SHT_RELX SHT_RELA
+# define REL_SECTION_FMT ".rela%s"
+#elif defined TCC_TARGET_VC4 /* 32 bit, but RELA like the vc4 binutils */
+# define ELFCLASSW ELFCLASS32
+# define ElfW(type) Elf##32##_##type
+# define ELFW(type) ELF##32##_##type
 # define ElfW_Rel ElfW(Rela)
 # define SHT_RELX SHT_RELA
 # define REL_SECTION_FMT ".rela%s"
@@ -1838,7 +1850,8 @@ ST_FUNC void tcc_debug_typedef(TCCState *s1, Sym *sym);
 ST_FUNC void tcc_debug_stabn(TCCState *s1, int type, int value);
 ST_FUNC void tcc_debug_fix_forw(TCCState *s1, CType *t);
 
-#if !(defined ELF_OBJ_ONLY || defined TCC_TARGET_ARM || defined TARGETOS_BSD)
+#if !(defined ELF_OBJ_ONLY || defined TCC_TARGET_ARM || defined TARGETOS_BSD \
+      || defined TCC_TARGET_VC4)
 ST_FUNC void tcc_eh_frame_start(TCCState *s1);
 ST_FUNC void tcc_eh_frame_end(TCCState *s1);
 ST_FUNC void tcc_eh_frame_hdr(TCCState *s1, int final);
