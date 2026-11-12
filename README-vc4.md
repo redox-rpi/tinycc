@@ -10,7 +10,8 @@ assembler for `.S` files and inline asm, and TCC's own linker. The
 firmware's whole `bootcode.bin` (C and `.S`) is compiled, assembled and
 linked by `vc4-tcc` alone (`-nostdlib -static -Wl,-Ttext=0x80000000
 -Wl,--oformat=binary`), given a bootcode that uses `__start_X`/`__stop_X`
-section symbols instead of linker-script ones (proposed to the firmware).
+section symbols instead of linker-script ones (rpi-open-firmware `fat-boot`
+a8bcbe7 or later; Pi test: pi-tests row 358, passed).
 No float, `long long`, struct arguments or VLAs yet.
 `vc4-tcc -c` writes ELF objects (`EM_VIDEOCORE3`, RELA) that also link with
 `vc4-elf-ld` from the vc4-toolchain. TCC has no linker scripts: no VMA/LMA

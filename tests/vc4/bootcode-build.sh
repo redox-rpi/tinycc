@@ -10,8 +10,8 @@
 #                     every .S file, so only the link is left to vc4-elf-ld;
 #                     names with .S are assembled, e.g. "fat start.S")
 #   LINK=tcc          link with vc4-tcc itself instead of vc4-elf-ld (needs
-#                     every file through TCC and a bootcode whose code only
-#                     uses __start_X/__stop_X section symbols); the checks
+#                     every file through TCC and fat-boot a8bcbe7 or later,
+#                     whose code uses __start_X/__stop_X symbols); the checks
 #                     of linker.ld (ASSERT) are done on the -Wl,-Map output
 #   KEEP=dir          keep bootcode-tcc.{elf,bin} and the TCC objects there
 #
