@@ -32,3 +32,20 @@ if diff -u "$t/want" "$t/got"; then
 else
 	echo "abi FAIL"; exit 1
 fi
+
+# the same with everything through vc4-tcc, linked by TCC's own linker
+newlib=$(dirname "$(dirname "$(command -v "${prefix}gcc")")")/vc4-elf/include
+tcc_cc() { "$tcc_dir/vc4-tcc" -B"$tcc_dir" -nostdinc -I"$tcc_dir/include" -I"$newlib" "$@"; }
+for f in sim-crt.S abi-main.c sim-rt.c sim-libc.c; do
+	tcc_cc -c "$here/$f" -o "$t/$f-all.o"
+done
+"$tcc_dir/vc4-tcc" -B"$tcc_dir" -nostdlib -static -Wl,-Ttext=0 \
+	-Wl,--section-alignment=4 -Wl,--oformat=binary -o "$t/abi-all.bin" \
+	"$t/sim-crt.S-all.o" "$t/abi-main.c-all.o" "$t/abi-tcc.o" \
+	"$t/sim-rt.c-all.o" "$t/sim-libc.c-all.o"
+timeout 120 "$emul" "$t/abi-all.bin" 0 0 > "$t/got-all" 2> "$t/err-all" || { cat "$t/err-all"; }
+if diff -u "$t/want" "$t/got-all"; then
+	echo "abi all-tcc ok (compiled, assembled and linked by vc4-tcc)"
+else
+	echo "abi all-tcc FAIL"; exit 1
+fi

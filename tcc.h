@@ -828,7 +828,7 @@ struct TCCState {
     char *elf_entryname; /* "_start" unless set */
     char *init_symbol; /* symbols to call at load-time (not used currently) */
     char *fini_symbol; /* symbols to call at unload-time (not used currently) */
-    char *mapfile; /* create a mapfile (not used currently) */
+    char *mapfile; /* -Wl,-Map=: section and symbol addresses, see tcc_write_map */
 
     /* output type, see TCC_OUTPUT_XXX */
     int output_type;

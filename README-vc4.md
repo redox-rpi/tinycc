@@ -6,11 +6,16 @@ redox-rpi/rpi-open-firmware (branch `redox-rpi`).
 
 **State: spike.** Integer subset (load/store, arithmetic, compares,
 branches, calls, frames, variadic functions, struct return), a VC4
-assembler for `.S` files and inline asm. The firmware's whole `bootcode/`
-(C and `.S`) builds with `vc4-tcc`; linking is still done by `vc4-elf-ld`.
+assembler for `.S` files and inline asm, and TCC's own linker. The
+firmware's whole `bootcode.bin` (C and `.S`) is compiled, assembled and
+linked by `vc4-tcc` alone (`-nostdlib -static -Wl,-Ttext=0x80000000
+-Wl,--oformat=binary`), given a bootcode that uses `__start_X`/`__stop_X`
+section symbols instead of linker-script ones (proposed to the firmware).
 No float, `long long`, struct arguments or VLAs yet.
-`vc4-tcc -c` writes ELF objects (`EM_VIDEOCORE3`, RELA) that link with
-`vc4-elf-ld` from the vc4-toolchain; TCC's own linker is not wired up.
+`vc4-tcc -c` writes ELF objects (`EM_VIDEOCORE3`, RELA) that also link with
+`vc4-elf-ld` from the vc4-toolchain. TCC has no linker scripts: no VMA/LMA
+split, no `ASSERT`; `-Wl,-Map=FILE` writes the final section and symbol
+addresses so a build script can do such checks.
 
 ## Files
 
@@ -22,9 +27,10 @@ No float, `long long`, struct arguments or VLAs yet.
 | `vc4-link.c` | relocations (`R_VC4_32`, `IMM32`, `PCREL27_MUL2`, `PCREL23_MUL2`, `PCREL27`) |
 | `tests/vc4/enc-test.py` | every encoder form against `vc4-elf-objdump` and, where it picks the same form, `vc4-elf-as` |
 | `tests/vc4/asm-test.sh`, `asm-test.S` | the assembler against `vc4-elf-as`: both objects linked at the same addresses must give the same bytes |
-| `tests/vc4/bootcode-build.sh` | compiles the firmware's `bootcode/` C and `.S` files (all, or `TCC_FILES=…`), compares sizes with GCC `-Os` per file, links them into the bootcode build |
+| `tests/vc4/bootcode-build.sh` | compiles the firmware's `bootcode/` C and `.S` files (all, or `TCC_FILES=…`), compares sizes with GCC `-Os` per file, links them into the bootcode build with vc4-elf-ld, or with `LINK=tcc` by vc4-tcc (linker.ld's checks done on the `-Wl,-Map` output) |
 | `tests/vc4/abi-sim.sh`, `abi-test.c`, `abi-main.c` | ABI and code generation test: the host build and the TCC build run in resim must print the same |
 | `tests/vc4/sim-rt.c` | `printf` on the mini UART for test programs in resim |
+| `tests/vc4/sim-crt.S`, `sim-libc.c` | start file and `mem*`/`strlen` for test programs built and linked by vc4-tcc alone; `abi-sim.sh` and `fat-sim.sh` run such an "all TCC" build too |
 | `tests/vc4/fat-sim.sh`, `fat-sim-main.c` | runs TCC's `fat.c` in the resim simulator (vc4emul) on FAT16 and FAT32 card images; every file must load with the right size and checksum |
 
 ## Build and test
@@ -62,6 +68,10 @@ prologue therefore saves r6, r7 and lr one by one.
   applies to the function's later definition (GCC does this; TCC put the
   code in `.text`), and a section that gets function code is marked
   executable.
+- `tccelf.c`: `-Wl,-Map=FILE` (parsed but unused before) writes the
+  output's sections and global symbols with their final addresses; for
+  VC4, code sections come first in the image, so the first object's code
+  lands at `-Ttext` as with a linker script.
 
 ## Licence
 

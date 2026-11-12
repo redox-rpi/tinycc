@@ -9,6 +9,10 @@
 #   TCC_FILES="fat"   which files TCC compiles (default: every C file and
 #                     every .S file, so only the link is left to vc4-elf-ld;
 #                     names with .S are assembled, e.g. "fat start.S")
+#   LINK=tcc          link with vc4-tcc itself instead of vc4-elf-ld (needs
+#                     every file through TCC and a bootcode whose code only
+#                     uses __start_X/__stop_X section symbols); the checks
+#                     of linker.ld (ASSERT) are done on the -Wl,-Map output
 #   KEEP=dir          keep bootcode-tcc.{elf,bin} and the TCC objects there
 #
 # The checkout needs bootcode/ (branch fat-boot or later) and the upstream
@@ -50,10 +54,32 @@ for f in $files; do
 done
 awk -v g="$gt" -v t="$tt" 'BEGIN { printf "%-10s %8d %8d %6.2f\n", "total", g, t, t / g }'
 
-tccobjs=$(for f in $files; do echo "$out/$f-tcc.o"; done)
-(cd build && "${prefix}gcc" -nostdlib -nostartfiles -Wl,--build-id=none \
-	-T ../linker.ld $objs $tccobjs -lgcc -o "$out/bootcode-tcc.elf")
-"${prefix}objcopy" -O binary "$out/bootcode-tcc.elf" "$out/bootcode-tcc.bin"
+# start.S first: its code is the image's first bytes
+tccobjs=$(for f in $files; do echo "$out/$f-tcc.o"; done | sort -t/ -k99 |
+	awk '/\/start\.S-tcc\.o$/ { print; next } { r = r $0 "\n" } END { printf "%s", r }')
+if [ "${LINK:-ld}" = tcc ]; then
+	[ -z "$objs" ] || { echo "LINK=tcc needs every file through TCC, left: $objs" >&2; exit 1; }
+	"$tcc_dir/vc4-tcc" -B"$tcc_dir" -nostdlib -static -Wl,-Ttext=0x80000000 \
+		-Wl,--section-alignment=4 -Wl,--oformat=binary \
+		-Wl,-Map="$out/bootcode-tcc.map" -o "$out/bootcode-tcc.bin" $tccobjs
+	# linker.ld's checks, on the map
+	sym() { awk -v n="$1" '$3 == n && $1 != "S" { print $1 }' "$out/bootcode-tcc.map"; }
+	sec() { awk -v n="$1" '$1 == "S" && $4 == n { print $2 }' "$out/bootcode-tcc.map"; }
+	for n in __start_bss __stop_bss __start_tramp __stop_tramp; do
+		[ -n "$(sym $n)" ] || { echo "map: $n missing" >&2; exit 1; }
+	done
+	[ "$(sec .text.start)" = 80000000 ] ||
+		{ echo "map: .text.start not at 0x80000000" >&2; exit 1; }
+	(( 16#$(sym __stop_bss) <= 0x80018000 )) ||
+		{ echo "bootcode leaves less than 12 KB of stack" >&2; exit 1; }
+	(( 16#$(sym __stop_tramp) - 16#$(sym __start_tramp) <= 0x800 )) ||
+		{ echo "chain trampoline over 2 KB" >&2; exit 1; }
+	echo "linked by vc4-tcc: .text.start at 0x80000000, bss ends 0x$(sym __stop_bss), trampoline $(( 16#$(sym __stop_tramp) - 16#$(sym __start_tramp) )) bytes"
+else
+	(cd build && "${prefix}gcc" -nostdlib -nostartfiles -Wl,--build-id=none \
+		-T ../linker.ld $objs $tccobjs -lgcc -o "$out/bootcode-tcc.elf")
+	"${prefix}objcopy" -O binary "$out/bootcode-tcc.elf" "$out/bootcode-tcc.bin"
+fi
 printf 'bootcode.bin (MONITOR=1): GCC %d bytes, with TCC objects %d bytes\n' \
 	"$(stat -c %s build/bootcode.bin)" "$(stat -c %s "$out/bootcode-tcc.bin")"
 if [ -n "${KEEP:-}" ]; then

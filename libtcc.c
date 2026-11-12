@@ -1458,7 +1458,6 @@ static int tcc_set_linker(TCCState *s, const char *optarg)
             ignoring = 1;
         } else if (link_option(&o, "Map=")) {
             tcc_set_str(&s->mapfile, o.arg);
-            ignoring = 1;
         } else if (link_option(&o, "oformat=")) {
 #if defined TCC_TARGET_PE
             if (0 == strncmp("pe-", o.arg, 3))

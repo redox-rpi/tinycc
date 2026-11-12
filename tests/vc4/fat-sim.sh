@@ -3,6 +3,8 @@
 # the firmware's bootcode/fat.c, compiled by vc4-tcc, reads FAT16 and FAT32
 # card images in the resim simulator (vc4emul); every loaded file must match
 # the original. The expected sizes and checksums come from the source files.
+# A third run builds everything (driver, runtime, start file, fat.c) with
+# vc4-tcc alone and links it with TCC's own linker ("all").
 # The same run with GCC's fat.c is for information only: resim lacks some
 # instructions GCC uses (switch, bitflip with an immediate), so a GCC run
 # that stops on one of those is reported as n/a, not as a failure.
@@ -35,6 +37,15 @@ for c in tcc gcc; do
 	"${prefix}objcopy" -O binary "$t/sim-$c.elf" "$t/sim-$c.bin"
 	[ "$(stat -c %s "$t/sim-$c.bin")" -lt $((16 << 20)) ]
 done
+# everything through vc4-tcc, linked by TCC
+tcc_cc() { "$tcc_dir/vc4-tcc" -B"$tcc_dir" -nostdinc -I"$tcc_dir/include" -I"$newlib" "$@"; }
+tcc_cc -c "$here/sim-crt.S" -o "$t/crt-all.o"
+tcc_cc "${inc[@]}" -c "$here/fat-sim-main.c" -o "$t/main-all.o"
+tcc_cc -c "$here/sim-rt.c" -o "$t/rt-all.o"
+tcc_cc -c "$here/sim-libc.c" -o "$t/libc-all.o"
+"$tcc_dir/vc4-tcc" -B"$tcc_dir" -nostdlib -static -Wl,-Ttext=0 \
+	-Wl,--section-alignment=4 -Wl,--oformat=binary -o "$t/sim-all.bin" \
+	"$t/crt-all.o" "$t/main-all.o" "$t/rt-all.o" "$t/libc-all.o" "$t/fat-tcc.o"
 
 mkdir "$t/src"
 head -c 3000000 /dev/urandom > "$t/src/Big-File.Data"
@@ -65,7 +76,7 @@ for fat in 16 32; do
 	for f in "$t"/src/*; do mcopy -i "$t/p.img" "$f" "::$(basename "$f")"; done
 	rm -f "$t/d.img"; truncate -s 1M "$t/d.img"; cat "$t/p.img" >> "$t/d.img"
 	printf 'label: dos\nstart=2048, type=%s\n' "$([ $fat = 16 ] && echo 6 || echo c)" | sfdisk -q "$t/d.img"
-	for c in gcc tcc; do
+	for c in gcc tcc all; do
 		cp "$t/sim-$c.bin" "$t/mem.bin"
 		truncate -s $((16 << 20)) "$t/mem.bin"
 		cat "$t/d.img" >> "$t/mem.bin"
