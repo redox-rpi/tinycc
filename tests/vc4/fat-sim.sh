@@ -22,6 +22,9 @@ prefix=$2
 emul=$3
 newlib=$(dirname "$(dirname "$(command -v "${prefix}gcc")")")/vc4-elf/include
 # KEEP=dir keeps the programs, images and simulator output there
+# BENCH=1 also prints how many instructions fat.c from GCC and from TCC
+#   needs to load the files from the FAT32 image (no checksums; needs a
+#   vc4emul that prints "insns: N" when VC4EMUL_COUNT is set)
 if [ -n "${KEEP:-}" ]; then t=$KEEP; mkdir -p "$t"; rm -rf "${t:?}"/*
 else t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; fi
 inc=(-I"$fw/bootcode" -I"$fw" -I"$fw/vc4_include" -D__VIDEOCORE4__ -DMONITOR=1)
@@ -91,4 +94,16 @@ for fat in 16 32; do
 		fi
 	done
 done
+if [ -n "${BENCH:-}" ]; then
+	"${prefix}gcc" -O1 -fno-jump-tables -DFAT_SIM_BENCH "${inc[@]}" \
+		-c "$here/fat-sim-main.c" -o "$t/main-bench.o"
+	for c in gcc tcc; do
+		"${prefix}gcc" -T vc4-sim.ld "$t/main-bench.o" "$t/rt.o" "$t/fat-$c.o" -o "$t/bench-$c.elf"
+		"${prefix}objcopy" -O binary "$t/bench-$c.elf" "$t/mem.bin"
+		truncate -s $((16 << 20)) "$t/mem.bin"
+		cat "$t/d.img" >> "$t/mem.bin"
+		VC4EMUL_COUNT=1 timeout 600 "$emul" "$t/mem.bin" 0 0 > /dev/null 2> "$t/err-bench-$c" || true
+		echo "bench FAT32 fat.c $c: $(grep -o 'insns: [0-9]*' "$t/err-bench-$c")"
+	done
+fi
 exit $fail

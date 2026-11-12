@@ -180,6 +180,9 @@ static int gind()
 {
   int t = ind;
   CODE_ON();
+#ifdef TCC_TARGET_VC4
+  vc4_label_ind = ind;   /* a jump target: vc4-gen.c must not look behind it */
+#endif
   if (debug_modes)
     tcc_tcov_block_begin(tcc_state);
   return t;
@@ -7204,6 +7207,95 @@ static void prev_scope_s(struct scope *o)
 /* ------------------------------------------------------------------------- */
 /* call block from 'for do while' loops */
 
+#if defined TCC_TARGET_VC4 || defined TCC_LOOP_ROTATE
+/* Loops with the condition at the end: the tokens of a loop condition and
+   of a for-loop increment are saved (up to the ')' or ';' that ends them,
+   which stays the current token) and compiled where they are needed: the
+   condition after the body as "jump back if true", and a short one also at
+   the top as the entry test (else the loop starts with a jump to the end
+   test). An iteration then takes one jump instead of two or three. TCC_LOOP_ROTATE turns it on for other targets, to run
+   the test suite on it. */
+static int loop_save_expr(TokenString **s1, TokenString **s2, int end)
+{
+    int level = 0, n = 0, keep = 0;
+    *s1 = tok_str_alloc();
+    if (s2)
+        *s2 = tok_str_alloc();
+    while (level > 0 || tok != end) {
+        if (tok == TOK_EOF)
+            tcc_error("unexpected end of file");
+        /* a lone "x++" or "x--" as the increment becomes "++x": the same
+           when the value is not used, and no copy of the old value */
+        if (n++ == 0 && !s2 && tok >= TOK_UIDENT) {
+            int id = tok, op;
+            next();
+            if (tok == TOK_INC || tok == TOK_DEC) {
+                op = tok;
+                next();
+                if (tok == end) {
+                    tok_str_add(*s1, op);
+                    tok_str_add(*s1, id);
+                    break;
+                }
+                tok_str_add(*s1, id);
+                tok_str_add(*s1, op);
+                continue;
+            }
+            tok_str_add(*s1, id);
+            continue;
+        }
+        /* a declaration in the expression must stay visible in the body,
+           and a statement expression may hold labels: such loops keep
+           TCC's usual order */
+        if (tok == TOK_ENUM || tok == TOK_STRUCT || tok == TOK_UNION
+            || tok == '{')
+            keep = 1;
+        if (tok == '(' || tok == '[' || tok == '{')
+            level++;
+        else if (tok == ')' || tok == ']' || tok == '}')
+            level--;
+        tok_str_add_tok(*s1);
+        if (s2)
+            tok_str_add_tok(*s2);
+        next();
+    }
+    tok_str_add(*s1, TOK_EOF);
+    if (s2)
+        tok_str_add(*s2, TOK_EOF);
+    return keep ? -1 : n;
+}
+
+/* loop_save_expr() returns the number of tokens, or -1 for an expression
+   that must be compiled in TCC's usual order. A condition up to this many
+   tokens is compiled twice (entry test and end test); a longer one only at
+   the end, reached by a jump on entry. */
+#define LOOP_DUP_TOKENS 8
+
+/* the body's start: a jump target (from the test at the end) that is
+   only reached through the entry test, so unlike gind() it leaves code
+   off when that test is constant false */
+static int loop_body_label(void)
+{
+#ifdef TCC_TARGET_VC4
+    vc4_label_ind = ind;
+#endif
+    return ind;
+}
+
+/* compile saved tokens as an expression; the value stays on the stack */
+static void loop_expr(TokenString *s)
+{
+    unget_tok(0);
+    begin_macro(s, 1);
+    next();
+    gexpr();
+    if (tok != TOK_EOF)
+        expect("')'");
+    end_macro();
+    next();
+}
+#endif
+
 static void lblock(int *bsym, int *csym)
 {
     struct scope *lo = loop_scope, *co = cur_scope;
@@ -7238,7 +7330,7 @@ static void gexpr_decl(void)
 
 static void block(int flags)
 {
-    int a, b, c, d, e, t;
+    int a, b, c, d, t;
     struct scope o;
     Sym *s;
 
@@ -7273,6 +7365,41 @@ again:
 
     } else if (t == TOK_WHILE) {
         new_scope_s(&o);
+#if defined TCC_TARGET_VC4 || defined TCC_LOOP_ROTATE
+        {
+            TokenString *c1, *c2;
+            int nc, e = 0;
+            skip('(');
+            nc = loop_save_expr(&c1, &c2, ')');
+            skip(')');
+            b = 0;
+            if (nc < 0) {
+                tok_str_free(c2);
+                d = gind();
+                loop_expr(c1);
+                a = gvtst(1, 0);
+                lblock(&a, &b);
+                gjmp_addr(d);
+            } else {
+                gind(); /* code on: a loop may be entered by goto */
+                if (nc <= LOOP_DUP_TOKENS) {
+                    loop_expr(c1);
+                    a = gvtst(1, 0);
+                    c = loop_body_label();
+                } else {
+                    tok_str_free(c1);
+                    a = 0;
+                    e = gjmp(0);
+                    c = gind();
+                }
+                lblock(&a, &b);
+                d = gind();
+                gsym(e);
+                loop_expr(c2);
+                gsym_addr(gvtst(0, 0), c);
+            }
+        }
+#else
         d = gind();
         skip('(');
         gexpr();
@@ -7281,6 +7408,7 @@ again:
         b = 0;
         lblock(&a, &b);
         gjmp_addr(d);
+#endif
         gsym_addr(b, d);
         gsym(a);
         prev_scope_s(&o);
@@ -7378,6 +7506,61 @@ again:
         }
         skip(';');
         a = b = 0;
+#if defined TCC_TARGET_VC4 || defined TCC_LOOP_ROTATE
+        {
+            TokenString *c1 = NULL, *c2 = NULL, *inc = NULL;
+            int nc = 0, ni = 0, e = 0;
+            if (tok != ';')
+                nc = loop_save_expr(&c1, &c2, ';');
+            skip(';');
+            if (tok != ')')
+                ni = loop_save_expr(&inc, NULL, ')');
+            skip(')');
+            if (nc < 0 || ni < 0) {
+                /* TCC's usual order, from the saved tokens */
+                c = d = gind();
+                if (c1) {
+                    tok_str_free(c2);
+                    loop_expr(c1);
+                    a = gvtst(1, 0);
+                }
+                if (inc) {
+                    e = gjmp(0);
+                    d = gind();
+                    loop_expr(inc);
+                    vpop();
+                    gjmp_addr(c);
+                    gsym(e);
+                }
+                lblock(&a, &b);
+                gjmp_addr(d);
+            } else {
+                gind(); /* code on: a loop may be entered by goto (87_dead_code) */
+                if (c1 && nc <= LOOP_DUP_TOKENS) {
+                    loop_expr(c1);
+                    a = gvtst(1, 0);
+                    c = loop_body_label();
+                } else {
+                    if (c1)
+                        tok_str_free(c1), e = gjmp(0);
+                    c = gind();
+                }
+                lblock(&a, &b);
+                d = gind();
+                if (inc) {
+                    loop_expr(inc);
+                    vpop();
+                }
+                gsym(e);
+                if (c2) {
+                    loop_expr(c2);
+                    gsym_addr(gvtst(0, 0), c);
+                } else {
+                    gjmp_addr(c);
+                }
+            }
+        }
+#else
         c = d = gind();
         if (tok != ';') {
             gexpr();
@@ -7385,7 +7568,7 @@ again:
         }
         skip(';');
         if (tok != ')') {
-            e = gjmp(0);
+            int e = gjmp(0);
             d = gind();
             gexpr();
             vpop();
@@ -7395,6 +7578,7 @@ again:
         skip(')');
         lblock(&a, &b);
         gjmp_addr(d);
+#endif
         gsym_addr(b, d);
         gsym(a);
         prev_scope(&o, 0);

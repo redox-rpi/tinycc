@@ -177,6 +177,14 @@ static inline void vc4_mov48(int rd, uint32_t imm)
     VC4_EMIT16(imm >> 16);
 }
 
+/* op rd, #imm32 (two-operand, as the 32-bit #simm16 form) */
+static inline void vc4_alu48(int op, int rd, uint32_t imm)
+{
+    VC4_EMIT16(0xe800 | op << 5 | rd);
+    VC4_EMIT16(imm & 0xffff);
+    VC4_EMIT16(imm >> 16);
+}
+
 /* add rd, ra, #imm32 */
 static inline void vc4_add48(int rd, int ra, uint32_t imm)
 {

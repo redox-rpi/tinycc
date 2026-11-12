@@ -56,6 +56,9 @@ int main(void)
     fat_list();
     for (i = 0; i < sizeof names / sizeof *names; i++) {
         int32_t n = fat_load(names[i], LOAD, LOAD_MAX);
+#ifdef FAT_SIM_BENCH
+        continue;   /* instruction counts of fat.c only (fat-sim.sh BENCH=1) */
+#endif
         if (n < 0)
             printf("RESULT %s missing\n", names[i]);
         else

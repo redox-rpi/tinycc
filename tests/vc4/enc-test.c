@@ -140,6 +140,13 @@ int main(int argc, char **argv)
     T(1, vc4_mov48(5, 0x12345678), "mov r5,0x12345678");
     /* gas picks a shorter form here */
     T(0, vc4_mov48(31 - 8, 0xfffffff8), "mov r23,0xfffffff8");
+    T(1, vc4_alu32i16(VC4_AND, 0, 248), "and r0,248");
+    T(1, vc4_alu32i16(VC4_CMP, 6, 512), "cmp r6,512");
+    T(1, vc4_alu32i16(VC4_OR, 3, -2), "or r3,-2");
+    T(0, vc4_alu32i16(VC4_LSR, 3, 7), "lsr r3,7");
+    T(1, vc4_alu48(VC4_AND, 2, 0x7fffffff), "and r2,0x7fffffff");
+    T(1, vc4_alu48(VC4_CMP, 0, 0x186a0), "cmp r0,0x186a0");
+    T(1, vc4_alu48(VC4_OR, 17, 0x80000000), "or r17,0x80000000");
     T(1, vc4_add48(5, 6, 0x12345678), "add r5,r6,0x12345678");
     T(1, vc4_add48(VC4_SP, VC4_SP, 0xffff0000), "add sp,sp,0xffff0000");
     for (i = 0; i < (int)(sizeof offs27 / sizeof *offs27); i++) {

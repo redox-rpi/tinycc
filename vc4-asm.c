@@ -422,7 +422,7 @@ ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier)
         }
         cstr_printf(add_str, "%d", modifier == 'n' ? -(int)sv->c.i : (int)sv->c.i);
     } else if ((r & VT_VALMASK) == VT_LOCAL) {
-        cstr_printf(add_str, "(r%d%+d)", FP, (int)sv->c.i);
+        cstr_printf(add_str, "(r%d%+d)", FP, (int)sv->c.i + VC4_FP_BIAS);
     } else {
         reg = r & VT_VALMASK;
         if (reg >= VT_CONST)
@@ -446,6 +446,7 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
     ASMOperand *op;
     int i, reg;
 
+    vc4_label_ind = ind;   /* no store-to-load forwarding across asm */
     if (!is_output) {
         for (reg = VC4_ASM_SAVE_FIRST; reg <= VC4_ASM_SAVE_LAST; reg++)
             if (clobber_regs[reg]) {

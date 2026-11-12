@@ -30,6 +30,10 @@
 
 #define TREG_R6    6   /* scratch */
 
+/* r7 points VC4_FP_BIAS bytes below the frame's top, so that the first
+   locals (r7 + 0..60) fit the 16-bit "ld rd,(rs+off)" form */
+#define VC4_FP_BIAS 64
+
 #define PTR_SIZE 4
 #define LDOUBLE_SIZE  8
 #define LDOUBLE_ALIGN 4
@@ -63,6 +67,11 @@ ST_DATA const int reg_classes[NB_REGS] = {
 #define FP 7
 
 static int func_sub_sp_offset;
+
+/* store-to-load forwarding: "st rX,(r7+n)" right before "ld rY,(r7+n)"
+   with no label in between becomes "mov rY,rX" (or nothing) */
+static int st_end = -1, st_reg, st_off;
+ST_DATA int vc4_label_ind = -1;   /* last code address that is a jump target */
 
 static void o16(unsigned h)
 {
@@ -211,6 +220,8 @@ static int vc4_chain_next(int pos, int *cc)
 ST_FUNC void gsym_addr(int t, int a)
 {
     int cc, next;
+    if (t && a == ind)
+        vc4_label_ind = ind;
     while (t) {
         next = vc4_chain_next(t, &cc);
         if (!VC4_FITS_S(a - t, 24))
@@ -284,14 +295,28 @@ ST_FUNC void load(int r, SValue *sv)
     if (fr & VT_LVAL) {
         int base = r, off = 0, sz = vc4_accsz(&sv->type, 0);
         if (v == VT_LOCAL) {
-            base = FP, off = fc;
+            base = FP, off = fc + VC4_FP_BIAS;
+            if (sz == VC4_LD && ind == st_end && vc4_label_ind != ind
+                && off == st_off && !(sv->type.t & VT_VOLATILE)) {
+                vc4_mov_reg(r, st_reg);
+                return;
+            }
         } else if (v == VT_LLOCAL) {
-            vc4_ldst(VC4_LD, r, FP, fc);
+            vc4_ldst(VC4_LD, r, FP, fc + VC4_FP_BIAS);
         } else if (v == VT_CONST) {
-            if (fr & VT_SYM)
-                vc4_sym_addr(r, sv->sym, fc);
-            else
-                vc4_mov_imm(r, fc);
+            if (fr & VT_SYM) {
+                /* global: one 48-bit "ld rd,(pc+sym)" as GCC does */
+                greloca(cur_text_section, sv->sym, ind, R_VC4_PCREL27, fc);
+                if (sz == VC4_LDSB) {
+                    vc4_ldst48(VC4_LDB, r, VC4_PC, 0);
+                    vc4_alu16i(VC4_SHL, r, 24);
+                    vc4_alu16i(VC4_ASR, r, 24);
+                } else {
+                    vc4_ldst48(sz, r, VC4_PC, 0);
+                }
+                return;
+            }
+            vc4_mov_imm(r, fc);
         } else if (v < VT_CONST) {
             base = v;
         } else {
@@ -314,7 +339,7 @@ ST_FUNC void load(int r, SValue *sv)
         else
             vc4_mov_imm(r, fc);
     } else if (v == VT_LOCAL) {
-        vc4_add_imm(r, FP, fc);
+        vc4_add_imm(r, FP, fc + VC4_FP_BIAS);
     } else if (v < VT_CONST) {
         vc4_mov_reg(r, v);
     } else if (v == VT_CMP) {
@@ -341,15 +366,17 @@ ST_FUNC void store(int r, SValue *sv)
         tcc_error("VC4: struct store");
     sz = vc4_accsz(&sv->type, 1);
     if (fr == VT_LOCAL) {
-        base = FP, off = fc;
+        base = FP, off = fc + VC4_FP_BIAS;
     } else if (fr == VT_LLOCAL) {
-        vc4_ldst(VC4_LD, TREG_R6, FP, fc);
+        vc4_ldst(VC4_LD, TREG_R6, FP, fc + VC4_FP_BIAS);
         base = TREG_R6;
     } else if (fr == VT_CONST) {
-        if (sv->r & VT_SYM)
-            vc4_sym_addr(TREG_R6, sv->sym, fc);
-        else
-            vc4_mov_imm(TREG_R6, fc);
+        if (sv->r & VT_SYM) {
+            greloca(cur_text_section, sv->sym, ind, R_VC4_PCREL27, fc);
+            vc4_ldst48(sz, r, VC4_PC, 0);
+            return;
+        }
+        vc4_mov_imm(TREG_R6, fc);
         base = TREG_R6;
     } else if (fr < VT_CONST) {
         base = fr;
@@ -358,6 +385,9 @@ ST_FUNC void store(int r, SValue *sv)
         return;
     }
     vc4_ldst(sz, r, base, off);
+    if (fr == VT_LOCAL && sz == VC4_ST && !nocode_wanted
+        && !(sv->type.t & VT_VOLATILE))
+        st_end = ind, st_reg = r, st_off = off;
 }
 
 /* ---- calls ---- */
@@ -464,7 +494,7 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
     } else {
         vc4_push_r6_r7_lr();
     }
-    vc4_mov_reg(FP, VC4_SP);
+    vc4_add_imm(FP, VC4_SP, -VC4_FP_BIAS);
     func_sub_sp_offset = ind;
     vc4_add48(VC4_SP, VC4_SP, 0); /* patched by gfunc_epilog */
     addr = func_regsave ? 36 : 12;
@@ -474,7 +504,7 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
             func_vc = 12;
         } else {
             loc -= 4;
-            vc4_ldst(VC4_ST, 0, FP, loc);
+            vc4_ldst(VC4_ST, 0, FP, loc + VC4_FP_BIAS);
             func_vc = loc;
         }
         n++;
@@ -485,7 +515,7 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
             gfunc_set_param(sym, 12 + 4 * n++, 0);
         } else if (n < 6) {
             loc -= 4;
-            vc4_ldst(VC4_ST, n++, FP, loc);
+            vc4_ldst(VC4_ST, n++, FP, loc + VC4_FP_BIAS);
             gfunc_set_param(sym, loc, 0);
         } else {
             gfunc_set_param(sym, addr, 0);
@@ -498,7 +528,7 @@ ST_FUNC void gfunc_epilog(void)
 {
     int v = (-loc + 3) & -4, saved_ind;
 
-    vc4_mov_reg(VC4_SP, FP);
+    vc4_add_imm(VC4_SP, FP, VC4_FP_BIAS);
     if (func_regsave) {
         vc4_ldst(VC4_LD, TREG_R6, VC4_SP, 0);
         vc4_ldst(VC4_LD, VC4_LR, VC4_SP, 8);
@@ -575,21 +605,45 @@ ST_FUNC void gen_opi(int op)
             vc4_alu16i(vop, r, c);
             goto done;
         }
-        if (vop == VC4_ADD || vop == VC4_SUB || vop == VC4_CMP) {
-            if (vop == VC4_SUB)
-                vop = VC4_ADD, c = -c;
+        /* single-bit masks: 16-bit bmask/bset/bclr */
+        if (vop == VC4_AND && c != -1 && (c & (c + 1)) == 0) {
+            int n = 0;
+            while ((uint32_t)c >> n)
+                n++;
+            vop = VC4_BMASK, c = n;
+        } else if (vop == VC4_OR && c && (c & (c - 1)) == 0) {
+            int n = 0;
+            while ((uint32_t)c >> n != 1)
+                n++;
+            vop = VC4_BSET, c = n;
+        } else if (vop == VC4_AND && ~c && (~c & (~c - 1)) == 0) {
+            int n = 0;
+            while ((uint32_t)~c >> n != 1)
+                n++;
+            vop = VC4_BCLR, c = n;
+        }
+        if (c >= 0 && c < 32 && vc4_op4[vop] >= 0) {
             vswap();
             r = gv(RC_INT);
             vswap();
-            if (vop == VC4_CMP && VC4_FITS_S(c, 6))
-                vc4_alu32i(VC4_CMP, VC4_AL, 0, r, c);
-            else if (vop == VC4_CMP) {
-                vc4_mov_imm(TREG_R6, c);
-                vc4_alu16(VC4_CMP, r, TREG_R6);
-            } else
-                vc4_add_imm(r, r, c);
+            vc4_alu16i(vop, r, c);
             goto done;
         }
+        /* every ALU op has "op rd,#simm16" and "op rd,#imm32" forms */
+        if (vop == VC4_SUB)
+            vop = VC4_ADD, c = -c;
+        vswap();
+        r = gv(RC_INT);
+        vswap();
+        if (vop == VC4_ADD)
+            vc4_add_imm(r, r, c);
+        else if (vop == VC4_CMP && VC4_FITS_S(c, 6))
+            vc4_alu32i(VC4_CMP, VC4_AL, 0, r, c);
+        else if (VC4_FITS_S(c, 16))
+            vc4_alu32i16(vop, r, c);
+        else
+            vc4_alu48(vop, r, c);
+        goto done;
     }
     gv2(RC_INT, RC_INT);
     r = vtop[-1].r;

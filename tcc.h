@@ -1744,6 +1744,11 @@ ST_FUNC void gen_increment_tcov (SValue *sv);
 ST_FUNC void gen_clear_cache(void);
 #endif
 
+/* ------------ vc4-gen.c ------------ */
+#ifdef TCC_TARGET_VC4
+ST_DATA int vc4_label_ind;
+#endif
+
 /* ------------ c67-gen.c ------------ */
 #ifdef TCC_TARGET_C67
 #endif

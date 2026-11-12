@@ -58,6 +58,37 @@ bytes with `ldb` and a shift pair. resim also lacks `switch` and
 `stm r6-r7,lr` stores lr at the top in resim; vc4-tcc's variadic
 prologue therefore saves r6, r7 and lr one by one.
 
+## Code size and speed (branch `vc4-opt`, experiment)
+
+| | before (`vc4` dbee1ac0) | `vc4-opt` | GCC 6.2.1 `-Os` |
+|---|---|---|---|
+| bootcode text | 24,856 (1.71×) | 22,362 (1.54×) | 14,526 |
+| `bootcode.bin` (TCC link) | 24,972 | 22,472 | 14,584 |
+| resim, `fat.c` loading the FAT32 test card (`fat-sim.sh BENCH=1`) | 65.0 M insns (5.4×) | 49.6 M (4.1×) | 12.1 M |
+
+What changed:
+- loops: the `for` increment and the loop condition are compiled after the
+  body (tokens saved), the condition as "jump back if true"; a short
+  condition (up to 8 tokens) also at the top as the entry test, a longer
+  one is reached by a jump on entry. One jump per iteration instead of
+  three. A lone `x++` increment becomes `++x`. Expressions with `enum`,
+  `struct`, `union` or `{` keep TCC's usual order (scope rules).
+- r7 points 64 bytes below the frame top, so the first 16 local words use
+  the 16-bit `ld/st rd,(r7+off)` form.
+- constants: every ALU op uses its `#simm16` or `#imm32` form; `and`/`or`
+  with one-bit masks become 16-bit `bmask`/`bset`/`bclr`.
+- globals: one 48-bit `ld/st rd,(pc+sym)` (R_VC4_PCREL27), as GCC does.
+- `st rX,(r7+n)` directly followed by `ld rY,(r7+n)` (no label between)
+  becomes `mov rY,rX` or nothing.
+
+The rest of the gap is register allocation: TCC keeps every local in the
+frame; GCC's copy loop is 3 instructions per byte, TCC's 14. Not cheap.
+
+`fat-sim.sh BENCH=1` needs a vc4emul that prints its instruction count
+(`insns: N` on stderr when `VC4EMUL_COUNT` is set; local patch of
+`vc4emul/main.cpp`), and GCC's `fat.c` needs `bitflip` (`OP_BCHG`, one line
+added to `VideoCoreIVExecute.hpp`, locally).
+
 ## Changes outside the VC4 files
 
 - `tccasm.c`: `.irp` (expanded on the source text, as gas does) and
@@ -69,6 +100,11 @@ prologue therefore saves r6, r7 and lr one by one.
   applies to the function's later definition (GCC does this; TCC put the
   code in `.text`), and a section that gets function code is marked
   executable.
+- `tccgen.c` (branch `vc4-opt`): loops with the condition at the end, for
+  VC4 or with `-DTCC_LOOP_ROTATE` (native `make test` passes with it, and
+  such a TCC builds itself reproducibly); `gind()` marks jump targets for
+  vc4-gen.c's store-to-load forwarding (`vc4_label_ind`, declared in
+  `tcc.h`).
 - `tccelf.c`: `-Wl,-Map=FILE` (parsed but unused before) writes the
   output's sections and global symbols with their final addresses; for
   VC4, code sections come first in the image, so the first object's code
