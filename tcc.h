@@ -1395,6 +1395,7 @@ ST_FUNC int tok_alloc_const(const char *str);
 ST_FUNC const char *get_tok_str(int v, CValue *cv);
 ST_FUNC void begin_macro(TokenString *str, int alloc);
 ST_FUNC void end_macro(void);
+ST_FUNC TokenString *tok_macro_top(void);
 ST_FUNC int set_idnum(int c, int val);
 ST_INLN void tok_str_new(TokenString *s);
 ST_FUNC TokenString *tok_str_alloc(void);
@@ -1747,6 +1748,13 @@ ST_FUNC void gen_clear_cache(void);
 /* ------------ vc4-gen.c ------------ */
 #ifdef TCC_TARGET_VC4
 ST_DATA int vc4_label_ind;
+#define REGVAR_MAX 8
+ST_DATA int regvar_ids[REGVAR_MAX];   /* tccgen.c: names wanted in registers */
+ST_DATA int nb_regvar_ids;
+ST_FUNC void vc4_local_var(Sym *sym);
+ST_FUNC int vc4_inc_regvar(int post, int d);
+ST_FUNC int vc4_loop_branch(int c);
+ST_FUNC SValue *vc4_vstack(void);
 #endif
 
 /* ------------ c67-gen.c ------------ */

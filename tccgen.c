@@ -48,6 +48,9 @@ ST_DATA char debug_modes;
 ST_DATA SValue *vtop;
 static SValue _vstack[1 + VSTACK_SIZE];
 #define vstack (_vstack + 1)
+#ifdef TCC_TARGET_VC4
+ST_FUNC SValue *vc4_vstack(void) { return vstack; }
+#endif
 
 ST_DATA int nocode_wanted; /* no code generation wanted */
 #define NODATA_WANTED (nocode_wanted > 0) /* no static data output wanted either */
@@ -3119,6 +3122,14 @@ op_err:
             type1 = vtop[-1].type;
             vpush_type_size(pointed_type(&vtop[-1].type), &align);
             vtop->type.t &= ~VT_UNSIGNED;
+#ifdef TCC_TARGET_VC4
+            /* p + i for 1-byte elements: no "i * 1", whose rvalue
+               conversion would copy a register variable i first */
+            if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
+                && vtop->c.i == 1 && is_integer_btype(vtop[-1].type.t & VT_BTYPE))
+                vtop--;
+            else
+#endif
             gen_op('*');
 #ifdef CONFIG_TCC_BCHECK
             if (tcc_state->do_bounds_check && !CONST_WANTED) {
@@ -3904,6 +3915,10 @@ ST_FUNC void vstore(void)
 ST_FUNC void inc(int post, int c)
 {
     test_lvalue();
+#ifdef TCC_TARGET_VC4
+    if (vc4_inc_regvar(post, c - TOK_MID))
+        return;
+#endif
     vdup(); /* save lvalue */
     if (post) {
         gv_dup(); /* duplicate value */
@@ -7296,6 +7311,16 @@ static void loop_expr(TokenString *s)
 }
 #endif
 
+/* the conditional jump back to the top of a loop at c */
+static void loop_branch_back(int c)
+{
+#ifdef TCC_TARGET_VC4
+    if (vc4_loop_branch(c))
+        return;
+#endif
+    gsym_addr(gvtst(0, 0), c);
+}
+
 static void lblock(int *bsym, int *csym)
 {
     struct scope *lo = loop_scope, *co = cur_scope;
@@ -7396,7 +7421,7 @@ again:
                 d = gind();
                 gsym(e);
                 loop_expr(c2);
-                gsym_addr(gvtst(0, 0), c);
+                loop_branch_back(c);
             }
         }
 #else
@@ -7554,7 +7579,7 @@ again:
                 gsym(e);
                 if (c2) {
                     loop_expr(c2);
-                    gsym_addr(gvtst(0, 0), c);
+                    loop_branch_back(c);
                 } else {
                     gjmp_addr(c);
                 }
@@ -7592,10 +7617,9 @@ again:
         skip(TOK_WHILE);
         skip('(');
 	gexpr();
-        c = gvtst(0, 0);
+        loop_branch_back(d);
         skip(')');
         skip(';');
-	gsym_addr(c, d);
         gsym(a);
         prev_scope_s(&o);
 
@@ -8647,6 +8671,10 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
 	    }
 #endif
             sym = sym_push(v, type, r, addr);
+#ifdef TCC_TARGET_VC4
+            if (!ad->asm_label)
+                vc4_local_var(sym);
+#endif
 	    if (ad->cleanup_func) {
 		Sym *cls = sym_push2(&all_cleanups,
                     SYM_FIELD | ++cur_scope->cl.n, 0, 0);
@@ -8848,6 +8876,108 @@ static void sym_push_params(Sym *ref)
 
 /* parse a function defined by symbol 'sym' and generate its code in
    'cur_text_section' */
+#ifdef TCC_TARGET_VC4
+/* Register variables (VC4): before a function is compiled, its body is
+   saved and scanned. Identifiers are counted (more inside loops); those
+   that follow a unary '&' or appear in an asm statement are left out (their
+   address may be taken). The best ones go to regvar_ids[]; vc4-gen.c puts
+   the 4-byte scalar locals and parameters of those names in r16-r23. The
+   body is then compiled from the saved tokens. */
+ST_DATA int regvar_ids[REGVAR_MAX];
+ST_DATA int nb_regvar_ids;
+
+static TokenString *regvar_scan_body(void)
+{
+    TokenString *body = tok_str_alloc();
+    struct { int id, w, out; } *v = NULL;
+    int nv = 0, i, j, level = 0, plevel = 0, prev = 0, amp = 0, asm_level = -1;
+    int depth = 0, loop_level[16], nloop = 0, hdr = -1, want_body = 0, has_asm = 0;
+    int stmt_level[16], nstmt = 0;
+    Sym *s;
+
+    nb_regvar_ids = 0;
+    for (;;) {
+        int t = tok;
+        if (t == TOK_EOF)
+            tcc_error("unexpected end of file");
+        tok_str_add_tok(body);
+        if (want_body && t != '{' && t != ';' && nstmt < 16) {
+            /* a loop body without braces ends at the next ';' at this
+               level */
+            stmt_level[nstmt++] = level, depth++;
+        } else if (t == ';') {
+            while (nstmt && stmt_level[nstmt - 1] == level && hdr < 0)
+                nstmt--, depth--;
+        }
+        if (t == '{') {
+            if (want_body && nloop < 16)
+                loop_level[nloop++] = level, depth++;
+            level++;
+        } else if (t == '}') {
+            level--;
+            if (nloop && loop_level[nloop - 1] == level)
+                nloop--, depth--;
+        }
+        want_body = 0;
+        if (t == '(') {
+            plevel++;
+        } else if (t == ')') {
+            plevel--;
+            if (asm_level == plevel)
+                asm_level = -1;
+            if (hdr == plevel) {     /* end of a for/while header */
+                hdr = -1, depth--;
+                want_body = 1;
+            }
+        } else if (t == TOK_FOR || t == TOK_WHILE) {
+            hdr = plevel, depth++;
+        } else if (t == TOK_DO) {
+            want_body = 1;
+        } else if (t == TOK_ASM1 || t == TOK_ASM2 || t == TOK_ASM3) {
+            if (asm_level < 0)
+                asm_level = plevel;
+            has_asm = 1;
+        } else if (t == '&' && !(prev >= TOK_UIDENT || prev == ')' || prev == ']')) {
+            amp = 1;
+        } else if (t >= TOK_UIDENT
+                   && !((s = sym_find(t)) && !s->sym_scope)) {
+            /* file-scope names (globals, functions, typedefs, enum
+               constants) are not locals: leave them out */
+            for (i = 0; i < nv && v[i].id != t; i++)
+                ;
+            if (i == nv) {
+                v = tcc_realloc(v, (nv + 1) * sizeof *v);
+                v[nv].id = t, v[nv].w = 0, v[nv].out = 0, nv++;
+            }
+            v[i].w += depth > 2 ? 64 : 1 << (3 * depth);
+            if (amp || asm_level >= 0)
+                v[i].out = 1;
+            amp = 0;
+        } else if (t != '(') {
+            amp = 0;
+        }
+        prev = t;
+        next();
+        if (level == 0)
+            break;
+    }
+    tok_str_add(body, TOK_EOF);
+    /* the REGVAR_MAX heaviest, used at least twice; none with inline asm,
+       which may use r8-r15 */
+    while (!has_asm && nb_regvar_ids < REGVAR_MAX) {
+        for (i = 0, j = -1; i < nv; i++)
+            if (!v[i].out && v[i].w >= 2 && (j < 0 || v[i].w > v[j].w))
+                j = i;
+        if (j < 0)
+            break;
+        regvar_ids[nb_regvar_ids++] = v[j].id;
+        v[j].out = 1;
+    }
+    tcc_free(v);
+    return body;
+}
+#endif
+
 static void gen_function(Sym *sym)
 {
     struct scope f = { 0 };
@@ -8889,10 +9019,27 @@ static void gen_function(Sym *sym)
     rsym = 0;
     nb_temp_local_vars = 0;
 
+#ifdef TCC_TARGET_VC4
+    TokenString *body = regvar_scan_body();
+    unget_tok(0);
+    begin_macro(body, 1);
+    next();
+#endif
     gfunc_prolog(sym);
     tcc_debug_prolog_epilog(tcc_state, 0);
     func_vla_arg(sym);
     block(0);
+#ifdef TCC_TARGET_VC4
+    /* block() leaves the function's closing '}' as the current token; the
+       token after it waits in the unget buffer below the body's tokens */
+    if (tok != '}')
+        expect("'}'");
+    /* an exhausted unget buffer (e.g. from a loop condition that ended
+       right before the '}') may still lie above the body's tokens */
+    while (tok_macro_top() && tok_macro_top() != body)
+        end_macro();
+    end_macro();
+#endif
     gsym(rsym);
     nocode_wanted = 0;
     tcc_debug_end_scope(NULL, !func_var);

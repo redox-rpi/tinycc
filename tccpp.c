@@ -1076,6 +1076,11 @@ ST_FUNC void end_macro(void)
     }
 }
 
+ST_FUNC TokenString *tok_macro_top(void)
+{
+    return macro_stack;
+}
+
 static void tok_str_add2(TokenString *s, int t, CValue *cv)
 {
     int len, *str;

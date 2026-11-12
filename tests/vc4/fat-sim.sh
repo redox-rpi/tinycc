@@ -104,6 +104,29 @@ if [ -n "${BENCH:-}" ]; then
 		cat "$t/d.img" >> "$t/mem.bin"
 		VC4EMUL_COUNT=1 timeout 600 "$emul" "$t/mem.bin" 0 0 > /dev/null 2> "$t/err-bench-$c" || true
 		echo "bench FAT32 fat.c $c: $(grep -o 'insns: [0-9]*' "$t/err-bench-$c")"
+		# PROF=dir: per-function instruction counts (needs a vc4emul
+		# that writes a pc histogram to $VC4EMUL_PROF)
+		if [ -n "${PROF:-}" ]; then
+			mkdir -p "$PROF"
+			VC4EMUL_PROF="$PROF/pc-$c.txt" timeout 1200 "$emul" "$t/mem.bin" 0 0 > /dev/null 2>&1 || true
+			cp "$t/bench-$c.elf" "$PROF/"
+			"${prefix}objdump" -d "$t/bench-$c.elf" > "$PROF/bench-$c.dis"
+			"${prefix}nm" -n "$t/bench-$c.elf" | python3 -I -c '
+import sys
+syms = [(int(a, 16), n) for a, k, n in (l.split() for l in open(sys.argv[1]) if len(l.split()) == 3) if k in "tT"]
+cnt = {}
+for l in open(sys.argv[2]):
+    pc, c = l.split(); pc = int(pc, 16); c = int(c)
+    name = "?"
+    for a, n in syms:
+        if a <= pc: name = n
+        else: break
+    cnt[name] = cnt.get(name, 0) + c
+tot = sum(cnt.values())
+for n, c in sorted(cnt.items(), key=lambda e: -e[1])[:12]:
+    print("  %-24s %10d %5.1f%%" % (n, c, 100.0 * c / tot))
+' /dev/stdin "$PROF/pc-$c.txt"
+		fi
 	done
 fi
 exit $fail

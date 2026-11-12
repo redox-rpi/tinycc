@@ -69,6 +69,9 @@ static inline void vc4_bl_reg(int r) { VC4_EMIT16(0x0060 | r); }
 /* stm r6-r7,lr,(--sp) and ldm r6-r7,pc,(sp++) */
 static inline void vc4_push_r6_r7_lr(void) { VC4_EMIT16(0x03a1); }
 static inline void vc4_pop_r6_r7_pc(void) { VC4_EMIT16(0x0321); }
+/* stm r6-r(7+n),lr,(--sp) and ldm r6-r(7+n),pc,(sp++), n = 0..24 */
+static inline void vc4_push_r6_r7_lr_n(int n) { VC4_EMIT16(0x03a1 + n); }
+static inline void vc4_pop_r6_r7_pc_n(int n) { VC4_EMIT16(0x0321 + n); }
 
 /* op rd, rs  (rd, rs in r0..r15) */
 static inline void vc4_alu16(int op, int rd, int rs)

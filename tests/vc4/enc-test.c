@@ -140,6 +140,18 @@ int main(int argc, char **argv)
     T(1, vc4_mov48(5, 0x12345678), "mov r5,0x12345678");
     /* gas picks a shorter form here */
     T(0, vc4_mov48(31 - 8, 0xfffffff8), "mov r23,0xfffffff8");
+    T(1, vc4_push_r6_r7_lr_n(0), "stm r6-r7,lr,(--sp)");
+    T(1, vc4_pop_r6_r7_pc_n(0), "ldm r6-r7,pc,(sp++)");
+    T(1, vc4_push_r6_r7_lr_n(3), "stm r6-r10,lr,(--sp)");
+    T(1, vc4_pop_r6_r7_pc_n(3), "ldm r6-r10,pc,(sp++)");
+    T(1, vc4_push_r6_r7_lr_n(8), "stm r6-r15,lr,(--sp)");
+    T(1, vc4_pop_r6_r7_pc_n(8), "ldm r6-r15,pc,(sp++)");
+    T(1, vc4_alu32(VC4_ADD, VC4_AL, 0, 8, 1), "add r0,r8,r1");
+    T(1, vc4_alu32(VC4_CMP, VC4_AL, 0, 16, 17), "cmp r16,r17");
+    T(1, vc4_alu32(VC4_ADD, VC4_AL, 0, 16, 1), "add r0,r16,r1");
+    T(1, vc4_alu32(VC4_SUB, VC4_AL, 3, 3, 20), "sub r3,r3,r20");
+    T(1, vc4_alu32i(VC4_ADD, VC4_AL, 2, 17, 5), "add r2,r17,5");
+    T(1, vc4_alu32i(VC4_CMP, VC4_AL, 0, 18, -3), "cmp r18,-3");
     T(1, vc4_alu32i16(VC4_AND, 0, 248), "and r0,248");
     T(1, vc4_alu32i16(VC4_CMP, 6, 512), "cmp r6,512");
     T(1, vc4_alu32i16(VC4_OR, 3, -2), "or r3,-2");

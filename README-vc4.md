@@ -60,12 +60,12 @@ prologue therefore saves r6, r7 and lr one by one.
 
 ## Code size and speed (branch `vc4-opt`, experiment)
 
-| | before (`vc4` dbee1ac0) | `vc4-opt` | GCC 6.2.1 `-Os` |
-|---|---|---|---|
-| bootcode text | 24,856 (1.71×) | 22,362 (1.54×) | 14,526 |
-| `bootcode.bin` (TCC link) | 24,972 | 22,472 | 14,584 |
-| resim, `fat.c` loading the FAT32 test card (`fat-sim.sh BENCH=1`) | 65.0 M insns (5.4×) | 49.6 M (4.1×) | 12.1 M |
-| Pi, `fl START.ELF` (3 MB), pi-tests row 371 | 9.43 s (2.56×) | 8.18 s (2.22×) | 3.69 s |
+| | before (`vc4` dbee1ac0) | step 1 (3e88adad) | step 2: register variables | GCC 6.2.1 `-Os` |
+|---|---|---|---|---|
+| bootcode text | 24,856 (1.71×) | 22,362 (1.54×) | 21,524 (1.48×) | 14,526 |
+| `bootcode.bin` (TCC link) | 24,972 | 22,472 | 21,636 | 14,584 |
+| resim, `fat.c` loading the FAT32 test card (`fat-sim.sh BENCH=1`) | 65.0 M insns (5.4×) | 49.6 M (4.1×) | 18.7 M (1.55×) | 12.1 M |
+| Pi, `fl START.ELF` (3 MB) | 9.43 s (2.56×, row 371) | 8.18 s (2.22×, row 371) | (Pi row pending) | 3.69 s |
 
 What changed:
 - loops: the `for` increment and the loop condition are compiled after the
@@ -82,8 +82,37 @@ What changed:
 - `st rX,(r7+n)` directly followed by `ld rY,(r7+n)` (no label between)
   becomes `mov rY,rX` or nothing.
 
-The rest of the gap is register allocation: TCC keeps every local in the
-frame; GCC's copy loop is 3 instructions per byte, TCC's 14. Not cheap.
+Step 2:
+- register variables: before a function is compiled, its body's tokens
+  are scanned (then replayed); names are weighted by use, ×8 per loop
+  level, and the 8 heaviest that are not file-scope names, never follow a
+  unary `&` and do not appear in inline asm become candidates. Their
+  4-byte scalar locals and parameters live in r8-r15 (callee-saved, 16-bit
+  forms): the prologue's `stm r6-r7,lr` is widened in place to
+  `stm r6-r(7+n),lr`, the epilogue's `ldm` likewise, so a function without
+  them costs nothing. None in variadic functions, functions with stack
+  arguments or with inline asm.
+- `x++`/`--x` on a register variable is one `add`; a store into one
+  retargets the instruction that computed the value (`add r9,r9,r1`, not
+  `add r0,r9,r1; mov r9,r0`); a cast lvalue such as `(uint8_t)v` reads the
+  low bits.
+- `p[i]` for bytes: no `i*1` (whose rvalue conversion copied i), and
+  `add rB,ra,rb; ldb rd,(rB)` becomes `ldb rd,(ra+rb)`.
+- the loop bottom `add rd,#i; cmp rd,rs; b<cc>` becomes GCC's
+  `addcmpb<cc> rd,#i,rs,top` (or `b<cc> rd,rs,top`).
+- the frame's `add sp,#-size` is the 4-byte `#simm16` form (frames up to
+  32 KB).
+
+GCC's copy loop in `fat_load` is 3 instructions per byte, TCC's was 14 and
+is 6 now (a post-increment copy and the index add remain: GCC strength-
+reduces both pointers to one index).
+
+`tests/vc4/tests2-diff.sh` runs TinyCC's tests/tests2 programs in resim,
+compiled by this vc4-tcc and by an older reference build, and compares
+the outputs (70 run, 59 of them also match the host's `.expect`; the rest
+use floats, `long long` division or more of printf than sim-rt has).
+`fat-sim.sh PROF=dir` prints instructions per function (needs a vc4emul
+that writes a pc histogram to `$VC4EMUL_PROF`; local patch).
 
 `fat-sim.sh BENCH=1` needs a vc4emul that prints its instruction count
 (`insns: N` on stderr when `VC4EMUL_COUNT` is set; local patch of
@@ -105,7 +134,10 @@ added to `VideoCoreIVExecute.hpp`, locally).
   VC4 or with `-DTCC_LOOP_ROTATE` (native `make test` passes with it, and
   such a TCC builds itself reproducibly); `gind()` marks jump targets for
   vc4-gen.c's store-to-load forwarding (`vc4_label_ind`, declared in
-  `tcc.h`).
+  `tcc.h`). For VC4 only: the register-variable scan before
+  `gen_function` (`regvar_ids`), hooks for `++`/`--`
+  (`vc4_inc_regvar`) and the loop branch (`vc4_loop_branch`), no `i*1`
+  for byte pointers. `tccpp.c` gets `tok_macro_top()`.
 - `tccelf.c`: `-Wl,-Map=FILE` (parsed but unused before) writes the
   output's sections and global symbols with their final addresses; for
   VC4, code sections come first in the image, so the first object's code
