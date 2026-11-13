@@ -508,6 +508,120 @@ static void pop_section(TCCState *s1)
     use_section1(s1, prev);
 }
 
+static int asm_idchar(int c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+        || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '$';
+}
+
+/* read one raw source character for .irp (-1 at end of file) */
+static int asm_raw_getc(void)
+{
+    BufferedFile *bf = file;
+    if (bf->buf_ptr >= bf->buf_end) {
+        int len = bf->fd >= 0 ? read(bf->fd, bf->buffer, IO_BUF_SIZE) : 0;
+        if (len <= 0)
+            return -1;
+        bf->buf_ptr = bf->buffer;
+        bf->buf_end = bf->buffer + len;
+        *bf->buf_end = CH_EOB;
+    }
+    return *bf->buf_ptr++;
+}
+
+/* .irp SYM, V1, V2, ...  body  .endr: the body is assembled once per value,
+   with every \SYM replaced by the value (\() pastes nothing).  Done on the
+   source text, as gas does, so "label_\SYM:" makes new names. */
+static void asm_irp(TCCState *s1, int global)
+{
+    CString body, vals, text;
+    int name, nvals = 0, depth = 0, c, i, lines = 0, saved_flags, body_line;
+    const char *nm, *v, *p;
+    BufferedFile **saved_inc;
+
+    if (macro_ptr)
+        tcc_error(".irp inside .rept or a macro is not supported");
+    next();
+    if (tok < TOK_IDENT)
+        expect("symbol");
+    name = tok;
+    next();
+    cstr_new(&vals);
+    while (tok == ',') {
+        next();
+        if (tok == TOK_LINEFEED)
+            break;
+        cstr_cat(&vals, get_tok_str(tok, &tokc), -1);
+        cstr_ccat(&vals, '\0');
+        nvals++;
+        next();
+    }
+    if (tok != TOK_LINEFEED)
+        expect("end of line");
+
+    /* body: raw lines up to the matching .endr */
+    body_line = file->line_num;
+    cstr_new(&body);
+    for (;;) {
+        CString line;
+        cstr_new(&line);
+        while ((c = asm_raw_getc()) >= 0 && c != '\n')
+            cstr_ccat(&line, c);
+        cstr_ccat(&line, '\0');
+        lines++;
+        for (p = line.data; *p == ' ' || *p == '\t'; p++)
+            ;
+        if (!strncmp(p, ".irp", 4) || !strncmp(p, ".rept", 5))
+            depth++;
+        if (!strncmp(p, ".endr", 5) && !asm_idchar(p[5])) {
+            if (depth-- == 0) {
+                cstr_free(&line);
+                break;
+            }
+        }
+        if (c < 0) {
+            cstr_free(&line);
+            tcc_error(".endr not found");
+        }
+        cstr_cat(&body, line.data, -1);
+        cstr_ccat(&body, '\n');
+        cstr_free(&line);
+    }
+    file->line_num += lines;
+
+    nm = get_tok_str(name, NULL);
+    saved_flags = parse_flags;
+    for (i = 0, v = vals.data; i < nvals; i++, v += strlen(v) + 1) {
+        cstr_new(&text);
+        for (p = body.data; p < body.data + body.size; p++) {
+            size_t l = strlen(nm);
+            if (*p == '\\' && !strncmp(p + 1, nm, l)
+                && !asm_idchar(p[1 + l])) {
+                cstr_cat(&text, v, -1);
+                p += l;
+            } else if (*p == '\\' && p[1] == '(' && p[2] == ')') {
+                p += 2;
+            } else {
+                cstr_ccat(&text, *p);
+            }
+        }
+        tcc_open_bf(s1, file->filename, text.size);
+        memcpy(file->buffer, text.data, text.size);
+        file->line_num = body_line;
+        /* end of this buffer is end of input, not an #include pop */
+        saved_inc = s1->include_stack_ptr;
+        s1->include_stack_ptr = s1->include_stack;
+        tcc_assemble_internal(s1, (saved_flags & PARSE_FLAG_PREPROCESS), global);
+        s1->include_stack_ptr = saved_inc;
+        tcc_close();
+        cstr_free(&text);
+    }
+    parse_flags = saved_flags;
+    cstr_free(&body);
+    cstr_free(&vals);
+    tok = TOK_LINEFEED;
+}
+
 static void asm_parse_directive(TCCState *s1, int global)
 {
     int n, offset, v, size, tok1, c;
@@ -523,6 +637,11 @@ static void asm_parse_directive(TCCState *s1, int global)
     case TOK_ASMDIR_skip:
     case TOK_ASMDIR_space:
         tok1 = tok;
+#ifdef TCC_TARGET_VC4
+        /* as in the vc4 GNU assembler: .align N aligns to 2^N bytes */
+        if (tok1 == TOK_ASMDIR_align)
+            tok1 = TOK_ASMDIR_p2align;
+#endif
         next();
         n = asm_int_expr(s1);
         if (tok1 == TOK_ASMDIR_p2align)
@@ -697,6 +816,30 @@ static void asm_parse_directive(TCCState *s1, int global)
                 macro_ptr = init_str->str;
             }
             end_macro();
+            next();
+            break;
+        }
+    case TOK_ASMDIR_irp:
+        asm_irp(s1, global);
+        break;
+    case TOK_ASMDIR_incbin:
+        {
+            char buf[4096];
+            int fd, len;
+            next();
+            if (tok != TOK_STR)
+                expect("file name");
+            fd = open(tokc.str.data, O_RDONLY | O_BINARY);
+            if (fd < 0)
+                tcc_error(".incbin: cannot open '%s'", (char *)tokc.str.data);
+            while ((len = read(fd, buf, sizeof buf)) > 0) {
+                if (sec->sh_type != SHT_NOBITS) {
+                    sec->data_offset = ind;
+                    memcpy(section_ptr_add(sec, len), buf, len);
+                }
+                ind += len;
+            }
+            close(fd);
             next();
             break;
         }

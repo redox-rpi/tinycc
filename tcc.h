@@ -158,11 +158,13 @@ extern long double strtold (const char *__nptr, char **__endptr);
 /* #define TCC_TARGET_ARM64  *//* ARMv8 code generator */
 /* #define TCC_TARGET_C67    *//* TMS320C67xx code generator */
 /* #define TCC_TARGET_RISCV64 *//* risc-v code generator */
+/* #define TCC_TARGET_VC4    *//* VideoCore IV VPU code generator */
 
 /* default target is I386 */
 #if !defined(TCC_TARGET_I386) && !defined(TCC_TARGET_ARM) && \
     !defined(TCC_TARGET_ARM64) && !defined(TCC_TARGET_C67) && \
-    !defined(TCC_TARGET_X86_64) && !defined(TCC_TARGET_RISCV64)
+    !defined(TCC_TARGET_X86_64) && !defined(TCC_TARGET_RISCV64) && \
+    !defined(TCC_TARGET_VC4)
 # if defined __x86_64__
 #  define TCC_TARGET_X86_64
 # elif defined __arm__
@@ -387,6 +389,10 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # include "riscv64-gen.c"
 # include "riscv64-link.c"
 # include "riscv64-asm.c"
+#elif defined(TCC_TARGET_VC4)
+# include "vc4-gen.c"
+# include "vc4-link.c"
+# include "vc4-asm.c"
 #else
 #error unknown target
 #endif
@@ -398,6 +404,13 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define ELFCLASSW ELFCLASS64
 # define ElfW(type) Elf##64##_##type
 # define ELFW(type) ELF##64##_##type
+# define ElfW_Rel ElfW(Rela)
+# define SHT_RELX SHT_RELA
+# define REL_SECTION_FMT ".rela%s"
+#elif defined TCC_TARGET_VC4 /* 32 bit, but RELA like the vc4 binutils */
+# define ELFCLASSW ELFCLASS32
+# define ElfW(type) Elf##32##_##type
+# define ELFW(type) ELF##32##_##type
 # define ElfW_Rel ElfW(Rela)
 # define SHT_RELX SHT_RELA
 # define REL_SECTION_FMT ".rela%s"
@@ -520,7 +533,7 @@ struct FuncAttr {
     func_dtor   : 1, /* attribute((destructor)) */
     func_args   : 8, /* PE __stdcall args */
     func_alwinl : 1, /* always_inline */
-    xxxx        : 15;
+    func_sect   : 15; /* section number from attribute((section)), 0 = none */
 };
 
 /* symbol management */
@@ -815,7 +828,7 @@ struct TCCState {
     char *elf_entryname; /* "_start" unless set */
     char *init_symbol; /* symbols to call at load-time (not used currently) */
     char *fini_symbol; /* symbols to call at unload-time (not used currently) */
-    char *mapfile; /* create a mapfile (not used currently) */
+    char *mapfile; /* -Wl,-Map=: section and symbol addresses, see tcc_write_map */
 
     /* output type, see TCC_OUTPUT_XXX */
     int output_type;
@@ -1382,6 +1395,7 @@ ST_FUNC int tok_alloc_const(const char *str);
 ST_FUNC const char *get_tok_str(int v, CValue *cv);
 ST_FUNC void begin_macro(TokenString *str, int alloc);
 ST_FUNC void end_macro(void);
+ST_FUNC TokenString *tok_macro_top(void);
 ST_FUNC int set_idnum(int c, int val);
 ST_INLN void tok_str_new(TokenString *s);
 ST_FUNC TokenString *tok_str_alloc(void);
@@ -1731,6 +1745,18 @@ ST_FUNC void gen_increment_tcov (SValue *sv);
 ST_FUNC void gen_clear_cache(void);
 #endif
 
+/* ------------ vc4-gen.c ------------ */
+#ifdef TCC_TARGET_VC4
+ST_DATA int vc4_label_ind;
+#define REGVAR_MAX 8
+ST_DATA int regvar_ids[REGVAR_MAX];   /* tccgen.c: names wanted in registers */
+ST_DATA int nb_regvar_ids;
+ST_FUNC void vc4_local_var(Sym *sym);
+ST_FUNC int vc4_inc_regvar(int post, int d);
+ST_FUNC int vc4_loop_branch(int c);
+ST_FUNC SValue *vc4_vstack(void);
+#endif
+
 /* ------------ c67-gen.c ------------ */
 #ifdef TCC_TARGET_C67
 #endif
@@ -1838,7 +1864,8 @@ ST_FUNC void tcc_debug_typedef(TCCState *s1, Sym *sym);
 ST_FUNC void tcc_debug_stabn(TCCState *s1, int type, int value);
 ST_FUNC void tcc_debug_fix_forw(TCCState *s1, CType *t);
 
-#if !(defined ELF_OBJ_ONLY || defined TCC_TARGET_ARM || defined TARGETOS_BSD)
+#if !(defined ELF_OBJ_ONLY || defined TCC_TARGET_ARM || defined TARGETOS_BSD \
+      || defined TCC_TARGET_VC4)
 ST_FUNC void tcc_eh_frame_start(TCCState *s1);
 ST_FUNC void tcc_eh_frame_end(TCCState *s1);
 ST_FUNC void tcc_eh_frame_hdr(TCCState *s1, int final);

@@ -2302,7 +2302,13 @@ static int sort_sections(TCCState *s1, int *sec_order, struct dyn_inf *d)
             if (s1->plt && s == s1->plt->reloc)
                 k = 0x21;
         } else if (s->sh_flags & SHF_EXECINSTR) {
+#ifdef TCC_TARGET_VC4
+            /* bare-metal firmware: code first, so the entry (first object's
+               first code section) lands at -Ttext, as with a linker script */
+            k = 0x30;
+#else
             k = 0x60;
+#endif
         /* RELRO sections --> */
         } else if (s->sh_flags & SHF_TLS) {
             if (s->sh_addralign > tls_align)
@@ -3008,6 +3014,56 @@ static void alloc_sec_names(TCCState *s1, int is_obj);
 
 /* Output an elf, coff or binary file */
 /* XXX: suppress unneeded sections */
+static int map_sym_cmp(const void *a, const void *b)
+{
+    const ElfW(Sym) *x = *(const ElfW(Sym) * const *)a;
+    const ElfW(Sym) *y = *(const ElfW(Sym) * const *)b;
+    return x->st_value < y->st_value ? -1 : x->st_value > y->st_value;
+}
+
+/* -Wl,-Map=FILE: the output's sections and global symbols with their final
+   addresses, one per line, so that build scripts can check a layout (e.g.
+   for --oformat=binary, which keeps no symbol table) without binutils:
+     S <addr> <size> <section>
+     <addr> <T|D|B|A> <symbol>        (as nm prints them, sorted) */
+static int tcc_write_map(TCCState *s1)
+{
+    FILE *f;
+    Section *s;
+    ElfW(Sym) *sym, **tab = NULL;
+    int i, n = 0;
+
+    f = fopen(s1->mapfile, "w");
+    if (!f)
+        return tcc_error_noabort("could not write '%s'", s1->mapfile);
+    for (i = 1; i < s1->nb_sections; i++) {
+        s = s1->sections[i];
+        if (s->sh_flags & SHF_ALLOC)
+            fprintf(f, "S %08lx %08lx %s\n", (unsigned long)s->sh_addr,
+                    (unsigned long)s->sh_size, s->name);
+    }
+    for_each_elem(s1->symtab, 1, sym, ElfW(Sym)) {
+        if (ELFW(ST_BIND)(sym->st_info) != STB_LOCAL
+            && sym->st_shndx != SHN_UNDEF)
+            dynarray_add(&tab, &n, sym);
+    }
+    qsort(tab, n, sizeof *tab, map_sym_cmp);
+    for (i = 0; i < n; i++) {
+        int c = 'A';
+        sym = tab[i];
+        if (sym->st_shndx < s1->nb_sections) {
+            s = s1->sections[sym->st_shndx];
+            c = s->sh_type == SHT_NOBITS ? 'B'
+              : s->sh_flags & SHF_EXECINSTR ? 'T' : 'D';
+        }
+        fprintf(f, "%08lx %c %s\n", (unsigned long)sym->st_value, c,
+                (char *)s1->symtab->link->data + sym->st_name);
+    }
+    tcc_free(tab);
+    fclose(f);
+    return 0;
+}
+
 static int elf_output_file(TCCState *s1, const char *filename)
 {
     int i, ret, file_type, *sec_order;
@@ -3151,6 +3207,8 @@ static int elf_output_file(TCCState *s1, const char *filename)
            except the GOT which is already relocated */
         relocate_syms(s1, s1->symtab, 0);
         if (s1->nb_errors != 0)
+            goto the_end;
+        if (s1->mapfile && tcc_write_map(s1) < 0)
             goto the_end;
         relocate_sections(s1);
         if (dynamic) {

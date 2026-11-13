@@ -118,6 +118,7 @@ DEF-arm64-OpenBSD  = $(DEF-arm64) -DTARGETOS_OpenBSD
 DEF-arm64-win32    = $(DEF-arm64) -DTCC_TARGET_PE
 DEF-riscv64        = -DTCC_TARGET_RISCV64
 DEF-c67            = -DTCC_TARGET_C67 -w # disable warnigs
+DEF-vc4            = -DTCC_TARGET_VC4
 DEF-x86_64-FreeBSD = $(DEF-x86_64) -DTARGETOS_FreeBSD
 DEF-x86_64-NetBSD  = $(DEF-x86_64) -DTARGETOS_NetBSD
 DEF-x86_64-OpenBSD = $(DEF-x86_64) -DTARGETOS_OpenBSD
@@ -133,12 +134,12 @@ TCCDOCS = tcc.1 tcc-doc.html tcc-doc.info
 all: $(PROGS) $(TCCLIBS) $(TCCDOCS)
 
 # cross compiler targets to build
-TCC_X = i386 x86_64 i386-win32 x86_64-win32 x86_64-osx arm arm64 arm64-win32 arm-wince c67
+TCC_X = i386 x86_64 i386-win32 x86_64-win32 x86_64-osx arm arm64 arm64-win32 arm-wince c67 vc4
 TCC_X += riscv64 arm64-osx
 # TCC_X += arm-fpa arm-fpa-ld arm-vfp arm-eabi
 
 # cross libtcc1.a targets to build
-LIBTCC1_X = $(filter-out c67,$(TCC_X))
+LIBTCC1_X = $(filter-out c67 vc4,$(TCC_X))
 
 PROGS_CROSS = $(foreach X,$(TCC_X),$X-tcc$(EXESUF))
 LIBTCC1_CROSS = $(foreach X,$(LIBTCC1_X),$X-libtcc1.a)
@@ -216,6 +217,7 @@ arm64_FILES = $(CORE_FILES) arm64-gen.c arm64-link.c arm64-asm.c arm64-tok.h
 arm64-osx_FILES = $(arm64_FILES) tccmacho.c
 arm64-win32_FILES = $(arm64_FILES) tccpe.c
 c67_FILES = $(CORE_FILES) c67-gen.c c67-link.c tcccoff.c
+vc4_FILES = $(CORE_FILES) vc4-gen.c vc4-link.c vc4-enc.h vc4-asm.c
 riscv64_FILES = $(CORE_FILES) riscv64-gen.c riscv64-link.c riscv64-asm.c
 
 TCCDEFS_H$(subst yes,,$(CONFIG_predefs)) = tccdefs_.h

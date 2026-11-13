@@ -48,6 +48,9 @@ ST_DATA char debug_modes;
 ST_DATA SValue *vtop;
 static SValue _vstack[1 + VSTACK_SIZE];
 #define vstack (_vstack + 1)
+#ifdef TCC_TARGET_VC4
+ST_FUNC SValue *vc4_vstack(void) { return vstack; }
+#endif
 
 ST_DATA int nocode_wanted; /* no code generation wanted */
 #define NODATA_WANTED (nocode_wanted > 0) /* no static data output wanted either */
@@ -180,6 +183,9 @@ static int gind()
 {
   int t = ind;
   CODE_ON();
+#ifdef TCC_TARGET_VC4
+  vc4_label_ind = ind;   /* a jump target: vc4-gen.c must not look behind it */
+#endif
   if (debug_modes)
     tcc_tcov_block_begin(tcc_state);
   return t;
@@ -1197,6 +1203,8 @@ static void merge_symattr(struct SymAttr *sa, struct SymAttr *sa1)
 /* Merge function attributes.  */
 static void merge_funcattr(struct FuncAttr *fa, struct FuncAttr *fa1)
 {
+    if (fa1->func_sect && !fa->func_sect)
+      fa->func_sect = fa1->func_sect;
     if (fa1->func_call && !fa->func_call)
       fa->func_call = fa1->func_call;
     if (fa1->func_type && !fa->func_type)
@@ -3114,6 +3122,14 @@ op_err:
             type1 = vtop[-1].type;
             vpush_type_size(pointed_type(&vtop[-1].type), &align);
             vtop->type.t &= ~VT_UNSIGNED;
+#ifdef TCC_TARGET_VC4
+            /* p + i for 1-byte elements: no "i * 1", whose rvalue
+               conversion would copy a register variable i first */
+            if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
+                && vtop->c.i == 1 && is_integer_btype(vtop[-1].type.t & VT_BTYPE))
+                vtop--;
+            else
+#endif
             gen_op('*');
 #ifdef CONFIG_TCC_BCHECK
             if (tcc_state->do_bounds_check && !CONST_WANTED) {
@@ -3899,6 +3915,10 @@ ST_FUNC void vstore(void)
 ST_FUNC void inc(int post, int c)
 {
     test_lvalue();
+#ifdef TCC_TARGET_VC4
+    if (vc4_inc_regvar(post, c - TOK_MID))
+        return;
+#endif
     vdup(); /* save lvalue */
     if (post) {
         gv_dup(); /* duplicate value */
@@ -4005,6 +4025,9 @@ redo:
             n = tcc_state->nb_sections;
             ad->section = find_section(tcc_state, astr);
             ad->new_section = n < tcc_state->nb_sections;
+            /* kept with the function type, so a definition after a
+               prototype with the attribute still goes there */
+            ad->f.func_sect = ad->section->sh_num;
             skip(')');
             break;
         case TOK_ALIAS1:
@@ -7199,6 +7222,105 @@ static void prev_scope_s(struct scope *o)
 /* ------------------------------------------------------------------------- */
 /* call block from 'for do while' loops */
 
+#if defined TCC_TARGET_VC4 || defined TCC_LOOP_ROTATE
+/* Loops with the condition at the end: the tokens of a loop condition and
+   of a for-loop increment are saved (up to the ')' or ';' that ends them,
+   which stays the current token) and compiled where they are needed: the
+   condition after the body as "jump back if true", and a short one also at
+   the top as the entry test (else the loop starts with a jump to the end
+   test). An iteration then takes one jump instead of two or three. TCC_LOOP_ROTATE turns it on for other targets, to run
+   the test suite on it. */
+static int loop_save_expr(TokenString **s1, TokenString **s2, int end)
+{
+    int level = 0, n = 0, keep = 0;
+    *s1 = tok_str_alloc();
+    if (s2)
+        *s2 = tok_str_alloc();
+    while (level > 0 || tok != end) {
+        if (tok == TOK_EOF)
+            tcc_error("unexpected end of file");
+        /* a lone "x++" or "x--" as the increment becomes "++x": the same
+           when the value is not used, and no copy of the old value */
+        if (n++ == 0 && !s2 && tok >= TOK_UIDENT) {
+            int id = tok, op;
+            next();
+            if (tok == TOK_INC || tok == TOK_DEC) {
+                op = tok;
+                next();
+                if (tok == end) {
+                    tok_str_add(*s1, op);
+                    tok_str_add(*s1, id);
+                    break;
+                }
+                tok_str_add(*s1, id);
+                tok_str_add(*s1, op);
+                continue;
+            }
+            tok_str_add(*s1, id);
+            continue;
+        }
+        /* a declaration in the expression must stay visible in the body,
+           and a statement expression may hold labels: such loops keep
+           TCC's usual order */
+        if (tok == TOK_ENUM || tok == TOK_STRUCT || tok == TOK_UNION
+            || tok == '{')
+            keep = 1;
+        if (tok == '(' || tok == '[' || tok == '{')
+            level++;
+        else if (tok == ')' || tok == ']' || tok == '}')
+            level--;
+        tok_str_add_tok(*s1);
+        if (s2)
+            tok_str_add_tok(*s2);
+        next();
+    }
+    tok_str_add(*s1, TOK_EOF);
+    if (s2)
+        tok_str_add(*s2, TOK_EOF);
+    return keep ? -1 : n;
+}
+
+/* loop_save_expr() returns the number of tokens, or -1 for an expression
+   that must be compiled in TCC's usual order. A condition up to this many
+   tokens is compiled twice (entry test and end test); a longer one only at
+   the end, reached by a jump on entry. */
+#define LOOP_DUP_TOKENS 8
+
+/* the body's start: a jump target (from the test at the end) that is
+   only reached through the entry test, so unlike gind() it leaves code
+   off when that test is constant false */
+static int loop_body_label(void)
+{
+#ifdef TCC_TARGET_VC4
+    vc4_label_ind = ind;
+#endif
+    return ind;
+}
+
+/* compile saved tokens as an expression; the value stays on the stack */
+static void loop_expr(TokenString *s)
+{
+    unget_tok(0);
+    begin_macro(s, 1);
+    next();
+    gexpr();
+    if (tok != TOK_EOF)
+        expect("')'");
+    end_macro();
+    next();
+}
+#endif
+
+/* the conditional jump back to the top of a loop at c */
+static void loop_branch_back(int c)
+{
+#ifdef TCC_TARGET_VC4
+    if (vc4_loop_branch(c))
+        return;
+#endif
+    gsym_addr(gvtst(0, 0), c);
+}
+
 static void lblock(int *bsym, int *csym)
 {
     struct scope *lo = loop_scope, *co = cur_scope;
@@ -7233,7 +7355,7 @@ static void gexpr_decl(void)
 
 static void block(int flags)
 {
-    int a, b, c, d, e, t;
+    int a, b, c, d, t;
     struct scope o;
     Sym *s;
 
@@ -7268,6 +7390,41 @@ again:
 
     } else if (t == TOK_WHILE) {
         new_scope_s(&o);
+#if defined TCC_TARGET_VC4 || defined TCC_LOOP_ROTATE
+        {
+            TokenString *c1, *c2;
+            int nc, e = 0;
+            skip('(');
+            nc = loop_save_expr(&c1, &c2, ')');
+            skip(')');
+            b = 0;
+            if (nc < 0) {
+                tok_str_free(c2);
+                d = gind();
+                loop_expr(c1);
+                a = gvtst(1, 0);
+                lblock(&a, &b);
+                gjmp_addr(d);
+            } else {
+                gind(); /* code on: a loop may be entered by goto */
+                if (nc <= LOOP_DUP_TOKENS) {
+                    loop_expr(c1);
+                    a = gvtst(1, 0);
+                    c = loop_body_label();
+                } else {
+                    tok_str_free(c1);
+                    a = 0;
+                    e = gjmp(0);
+                    c = gind();
+                }
+                lblock(&a, &b);
+                d = gind();
+                gsym(e);
+                loop_expr(c2);
+                loop_branch_back(c);
+            }
+        }
+#else
         d = gind();
         skip('(');
         gexpr();
@@ -7276,6 +7433,7 @@ again:
         b = 0;
         lblock(&a, &b);
         gjmp_addr(d);
+#endif
         gsym_addr(b, d);
         gsym(a);
         prev_scope_s(&o);
@@ -7373,6 +7531,61 @@ again:
         }
         skip(';');
         a = b = 0;
+#if defined TCC_TARGET_VC4 || defined TCC_LOOP_ROTATE
+        {
+            TokenString *c1 = NULL, *c2 = NULL, *inc = NULL;
+            int nc = 0, ni = 0, e = 0;
+            if (tok != ';')
+                nc = loop_save_expr(&c1, &c2, ';');
+            skip(';');
+            if (tok != ')')
+                ni = loop_save_expr(&inc, NULL, ')');
+            skip(')');
+            if (nc < 0 || ni < 0) {
+                /* TCC's usual order, from the saved tokens */
+                c = d = gind();
+                if (c1) {
+                    tok_str_free(c2);
+                    loop_expr(c1);
+                    a = gvtst(1, 0);
+                }
+                if (inc) {
+                    e = gjmp(0);
+                    d = gind();
+                    loop_expr(inc);
+                    vpop();
+                    gjmp_addr(c);
+                    gsym(e);
+                }
+                lblock(&a, &b);
+                gjmp_addr(d);
+            } else {
+                gind(); /* code on: a loop may be entered by goto (87_dead_code) */
+                if (c1 && nc <= LOOP_DUP_TOKENS) {
+                    loop_expr(c1);
+                    a = gvtst(1, 0);
+                    c = loop_body_label();
+                } else {
+                    if (c1)
+                        tok_str_free(c1), e = gjmp(0);
+                    c = gind();
+                }
+                lblock(&a, &b);
+                d = gind();
+                if (inc) {
+                    loop_expr(inc);
+                    vpop();
+                }
+                gsym(e);
+                if (c2) {
+                    loop_expr(c2);
+                    loop_branch_back(c);
+                } else {
+                    gjmp_addr(c);
+                }
+            }
+        }
+#else
         c = d = gind();
         if (tok != ';') {
             gexpr();
@@ -7380,7 +7593,7 @@ again:
         }
         skip(';');
         if (tok != ')') {
-            e = gjmp(0);
+            int e = gjmp(0);
             d = gind();
             gexpr();
             vpop();
@@ -7390,6 +7603,7 @@ again:
         skip(')');
         lblock(&a, &b);
         gjmp_addr(d);
+#endif
         gsym_addr(b, d);
         gsym(a);
         prev_scope(&o, 0);
@@ -7403,10 +7617,9 @@ again:
         skip(TOK_WHILE);
         skip('(');
 	gexpr();
-        c = gvtst(0, 0);
+        loop_branch_back(d);
         skip(')');
         skip(';');
-	gsym_addr(c, d);
         gsym(a);
         prev_scope_s(&o);
 
@@ -8458,6 +8671,10 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
 	    }
 #endif
             sym = sym_push(v, type, r, addr);
+#ifdef TCC_TARGET_VC4
+            if (!ad->asm_label)
+                vc4_local_var(sym);
+#endif
 	    if (ad->cleanup_func) {
 		Sym *cls = sym_push2(&all_cleanups,
                     SYM_FIELD | ++cur_scope->cl.n, 0, 0);
@@ -8659,6 +8876,111 @@ static void sym_push_params(Sym *ref)
 
 /* parse a function defined by symbol 'sym' and generate its code in
    'cur_text_section' */
+#ifdef TCC_TARGET_VC4
+/* Register variables (VC4): before a function is compiled, its body is
+   saved and scanned. Identifiers are counted (more inside loops); those
+   that follow a unary '&' or appear in an asm statement are left out (their
+   address may be taken). The best ones go to regvar_ids[]; vc4-gen.c puts
+   the 4-byte scalar locals and parameters of those names in r8-r15. The
+   body is then compiled from the saved tokens. */
+ST_DATA int regvar_ids[REGVAR_MAX];
+ST_DATA int nb_regvar_ids;
+
+static TokenString *regvar_scan_body(void)
+{
+    TokenString *body = tok_str_alloc();
+    struct { int id, w, out; } *v = NULL;
+    int nv = 0, i, j, level = 0, plevel = 0, prev = 0, amp = 0, asm_level = -1;
+    int depth = 0, loop_level[16], nloop = 0, hdr = -1, want_body = 0, has_asm = 0;
+    int stmt_level[16], nstmt = 0;
+    Sym *s;
+
+    nb_regvar_ids = 0;
+    for (;;) {
+        int t = tok;
+        if (t == TOK_EOF)
+            tcc_error("unexpected end of file");
+        tok_str_add_tok(body);
+        if (want_body && t != '{' && t != ';' && nstmt < 16) {
+            /* a loop body without braces ends at the next ';' at this
+               level */
+            stmt_level[nstmt++] = level, depth++;
+        } else if (t == ';') {
+            while (nstmt && stmt_level[nstmt - 1] == level && hdr < 0)
+                nstmt--, depth--;
+        }
+        if (t == '{') {
+            if (want_body && nloop < 16)
+                loop_level[nloop++] = level, depth++;
+            level++;
+        } else if (t == '}') {
+            level--;
+            if (nloop && loop_level[nloop - 1] == level)
+                nloop--, depth--;
+        }
+        want_body = 0;
+        if (t == '(') {
+            plevel++;
+        } else if (t == ')') {
+            plevel--;
+            if (asm_level == plevel)
+                asm_level = -1;
+            if (hdr == plevel) {     /* end of a for/while header */
+                hdr = -1, depth--;
+                want_body = 1;
+            }
+        } else if (t == TOK_FOR || t == TOK_WHILE) {
+            hdr = plevel, depth++;
+        } else if (t == TOK_DO) {
+            want_body = 1;
+        } else if (t == TOK_ASM1 || t == TOK_ASM2 || t == TOK_ASM3) {
+            if (asm_level < 0)
+                asm_level = plevel;
+            has_asm = 1;
+        } else if (t == '&' && !(prev >= TOK_UIDENT || prev == ']')) {
+            /* unary '&' (address taken); after ')' it may be a cast,
+               "(int *)&x", so count it as unary there too: at worst a
+               variable loses its register */
+            amp = 1;
+        } else if (t >= TOK_UIDENT
+                   && !((s = sym_find(t)) && !s->sym_scope)) {
+            /* file-scope names (globals, functions, typedefs, enum
+               constants) are not locals: leave them out */
+            for (i = 0; i < nv && v[i].id != t; i++)
+                ;
+            if (i == nv) {
+                v = tcc_realloc(v, (nv + 1) * sizeof *v);
+                v[nv].id = t, v[nv].w = 0, v[nv].out = 0, nv++;
+            }
+            v[i].w += depth > 2 ? 64 : 1 << (3 * depth);
+            if (amp || asm_level >= 0)
+                v[i].out = 1;
+            amp = 0;
+        } else if (t != '(') {
+            amp = 0;
+        }
+        prev = t;
+        next();
+        if (level == 0)
+            break;
+    }
+    tok_str_add(body, TOK_EOF);
+    /* the REGVAR_MAX heaviest, used at least twice; none with inline asm,
+       which may use r8-r15 */
+    while (!has_asm && nb_regvar_ids < REGVAR_MAX) {
+        for (i = 0, j = -1; i < nv; i++)
+            if (!v[i].out && v[i].w >= 2 && (j < 0 || v[i].w > v[j].w))
+                j = i;
+        if (j < 0)
+            break;
+        regvar_ids[nb_regvar_ids++] = v[j].id;
+        v[j].out = 1;
+    }
+    tcc_free(v);
+    return body;
+}
+#endif
+
 static void gen_function(Sym *sym)
 {
     struct scope f = { 0 };
@@ -8700,10 +9022,27 @@ static void gen_function(Sym *sym)
     rsym = 0;
     nb_temp_local_vars = 0;
 
+#ifdef TCC_TARGET_VC4
+    TokenString *body = regvar_scan_body();
+    unget_tok(0);
+    begin_macro(body, 1);
+    next();
+#endif
     gfunc_prolog(sym);
     tcc_debug_prolog_epilog(tcc_state, 0);
     func_vla_arg(sym);
     block(0);
+#ifdef TCC_TARGET_VC4
+    /* block() leaves the function's closing '}' as the current token; the
+       token after it waits in the unget buffer below the body's tokens */
+    if (tok != '}')
+        expect("'}'");
+    /* an exhausted unget buffer (e.g. from a loop condition that ended
+       right before the '}') may still lie above the body's tokens */
+    while (tok_macro_top() && tok_macro_top() != body)
+        end_macro();
+    end_macro();
+#endif
     gsym(rsym);
     nocode_wanted = 0;
     tcc_debug_end_scope(NULL, !func_var);
@@ -8962,8 +9301,15 @@ static int decl(int l)
                 } else {
                     /* compute text section */
                     cur_text_section = text_section;
+                    if (!ad.section && sym->type.ref->f.func_sect) {
+                        /* attribute((section)) on an earlier prototype */
+                        ad.section = tcc_state->sections[sym->type.ref->f.func_sect];
+                    }
                     if (ad.section) {
                         cur_text_section = ad.section;
+                        /* a new section becomes code; one made by a
+                           prototype became code there; an existing data
+                           section keeps its flags, as in GCC */
                         if (ad.new_section)
                             ad.section->sh_flags = text_section->sh_flags;
                     }
@@ -9015,6 +9361,10 @@ static int decl(int l)
                         /* external function definition */
                         /* specific case for func_call attribute */
                         merge_funcattr(&type.ref->f, &ad.f);
+                        /* a section that a prototype's attribute creates
+                           will hold the function's code */
+                        if (ad.section && ad.new_section)
+                            ad.section->sh_flags = text_section->sh_flags;
                     } else if (!(type.t & VT_ARRAY)) {
                         /* not lvalue if array */
                         r |= VT_LVAL;

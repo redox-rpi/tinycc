@@ -53,6 +53,10 @@
 #include "riscv64-gen.c"
 #include "riscv64-link.c"
 #include "riscv64-asm.c"
+#elif defined(TCC_TARGET_VC4)
+#include "vc4-gen.c"
+#include "vc4-link.c"
+#include "vc4-asm.c"
 #else
 #error unknown target
 #endif
@@ -1454,7 +1458,6 @@ static int tcc_set_linker(TCCState *s, const char *optarg)
             ignoring = 1;
         } else if (link_option(&o, "Map=")) {
             tcc_set_str(&s->mapfile, o.arg);
-            ignoring = 1;
         } else if (link_option(&o, "oformat=")) {
 #if defined TCC_TARGET_PE
             if (0 == strncmp("pe-", o.arg, 3))
@@ -1785,6 +1788,8 @@ static const char dumpmachine_str[] =
     "aarch64"
 #elif defined TCC_TARGET_RISCV64
     "riscv64"
+#elif defined TCC_TARGET_VC4
+    "vc4"
 #endif
     "-"
 #ifdef TCC_TARGET_PE
