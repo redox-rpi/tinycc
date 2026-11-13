@@ -131,8 +131,12 @@ added to `VideoCoreIVExecute.hpp`, locally).
   code in `.text`), and a section that gets function code is marked
   executable.
 - `tccgen.c` (branch `vc4-opt`): loops with the condition at the end, for
-  VC4 or with `-DTCC_LOOP_ROTATE` (native `make test` passes with it, and
-  such a TCC builds itself reproducibly); `gind()` marks jump targets for
+  VC4 or with `-DTCC_LOOP_ROTATE` (native `make test` passes with it; such
+  a TCC builds itself reproducibly when both stages get the define:
+  `make test`'s `tccb` compiles stage 2 without `--extra-cflags`, so with
+  the define given only through `configure` its compare fails). A short
+  loop condition is compiled twice (entry test and loop end), so a warning
+  in it is printed twice; `gind()` marks jump targets for
   vc4-gen.c's store-to-load forwarding (`vc4_label_ind`, declared in
   `tcc.h`). For VC4 only: the register-variable scan before
   `gen_function` (`regvar_ids`), hooks for `++`/`--`

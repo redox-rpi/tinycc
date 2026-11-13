@@ -183,6 +183,18 @@ static int strings(const char *p)
 
 /* every call into a variable first: the order in which printf's arguments
    are evaluated is unspecified, and the host's differs from TCC's */
+/* the address of a loop variable taken behind a cast: it must stay in
+   memory (review of PR #1) */
+static void set7(int *p) { *p += 7; }
+static int addr_cast(void)
+{
+    int x = 0, i;
+    for (i = 0; i < 10; i++)
+        x += i;
+    set7((int *)&x);
+    return x;
+}
+
 void run_tests(void)
 {
     int a, b, c, d, e, f;
@@ -204,4 +216,5 @@ void run_tests(void)
     printf("fib %d\n", fib(15));
     printf("structs %d\n", structs());
     printf("strings %d\n", strings("hello, VPU"));
+    printf("addr_cast %d\n", addr_cast());
 }

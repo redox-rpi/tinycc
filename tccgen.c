@@ -8881,7 +8881,7 @@ static void sym_push_params(Sym *ref)
    saved and scanned. Identifiers are counted (more inside loops); those
    that follow a unary '&' or appear in an asm statement are left out (their
    address may be taken). The best ones go to regvar_ids[]; vc4-gen.c puts
-   the 4-byte scalar locals and parameters of those names in r16-r23. The
+   the 4-byte scalar locals and parameters of those names in r8-r15. The
    body is then compiled from the saved tokens. */
 ST_DATA int regvar_ids[REGVAR_MAX];
 ST_DATA int nb_regvar_ids;
@@ -8937,7 +8937,10 @@ static TokenString *regvar_scan_body(void)
             if (asm_level < 0)
                 asm_level = plevel;
             has_asm = 1;
-        } else if (t == '&' && !(prev >= TOK_UIDENT || prev == ')' || prev == ']')) {
+        } else if (t == '&' && !(prev >= TOK_UIDENT || prev == ']')) {
+            /* unary '&' (address taken); after ')' it may be a cast,
+               "(int *)&x", so count it as unary there too: at worst a
+               variable loses its register */
             amp = 1;
         } else if (t >= TOK_UIDENT
                    && !((s = sym_find(t)) && !s->sym_scope)) {
@@ -9304,8 +9307,10 @@ static int decl(int l)
                     }
                     if (ad.section) {
                         cur_text_section = ad.section;
-                        /* new, or made by a prototype with the attribute */
-                        if (ad.new_section || !(ad.section->sh_flags & SHF_EXECINSTR))
+                        /* a new section becomes code; one made by a
+                           prototype became code there; an existing data
+                           section keeps its flags, as in GCC */
+                        if (ad.new_section)
                             ad.section->sh_flags = text_section->sh_flags;
                     }
                     gen_function(sym);
@@ -9356,6 +9361,10 @@ static int decl(int l)
                         /* external function definition */
                         /* specific case for func_call attribute */
                         merge_funcattr(&type.ref->f, &ad.f);
+                        /* a section that a prototype's attribute creates
+                           will hold the function's code */
+                        if (ad.section && ad.new_section)
+                            ad.section->sh_flags = text_section->sh_flags;
                     } else if (!(type.t & VT_ARRAY)) {
                         /* not lvalue if array */
                         r |= VT_LVAL;
