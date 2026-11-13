@@ -17,4 +17,4 @@ RESIM_REV=e9f04a3
 
 # rpi-open-firmware branch fat-boot, for fat-sim.sh and bootcode-build.sh.
 FAT_BOOT_REPO=redox-rpi/rpi-open-firmware
-FAT_BOOT_REV=a8bcbe7
+FAT_BOOT_REV=a8bcbe7a634661fea5075027ed6edb5c3a4c635c
