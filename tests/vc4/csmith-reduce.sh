@@ -7,7 +7,8 @@
 #
 # The test creduce runs keeps a candidate only if host gcc -O1 builds it
 # with the uninitialized, array-bounds and return warnings as errors, it
-# runs clean under ASan and UBSan, vc4-tcc builds it, it prints "checksum =" in resim, and the two
+# runs clean under ASan and UBSan, vc4-tcc builds it, it prints
+# "checksum =" in resim, and the two
 # checksums differ. Needs creduce and CSMITH_INC as for csmith-diff.sh.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,7 +22,7 @@ trap 'rm -rf "$w"' EXIT
 cat > "$w/test.sh" <<EOF
 #!/bin/bash
 defs="-DNO_LONGLONG -DUSE_MATH_MACROS"
-gcc -O1 -w -Werror=uninitialized -Werror=maybe-uninitialized \\
+gcc -O1 -Werror=uninitialized -Werror=maybe-uninitialized \\
 	-Werror=return-type -Werror=implicit-int -Werror=array-bounds \\
 	-Werror=implicit-function-declaration -Werror=int-conversion \\
 	-fsanitize=address,undefined -fno-sanitize-recover=all \$defs \\
