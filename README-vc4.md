@@ -65,7 +65,7 @@ prologue therefore saves r6, r7 and lr one by one.
 | bootcode text | 24,856 (1.71×) | 22,362 (1.54×) | 21,524 (1.48×) | 14,526 |
 | `bootcode.bin` (TCC link) | 24,972 | 22,472 | 21,636 | 14,584 |
 | resim, `fat.c` loading the FAT32 test card (`fat-sim.sh BENCH=1`) | 65.0 M insns (5.4×) | 49.6 M (4.1×) | 18.7 M (1.55×) | 12.1 M |
-| Pi, `fl START.ELF` (3 MB) | 9.43 s (2.56×, row 371) | 8.18 s (2.22×, row 371) | (Pi row pending) | 3.69 s |
+| Pi, `fl START.ELF` (3 MB) | 9.43 s (2.56×, row 371) | 8.18 s (2.22×, row 371) | 4.18 s (1.14×, row 383) | 3.69 s (3.68 s in row 383) |
 
 What changed:
 - loops: the `for` increment and the loop condition are compiled after the
