@@ -5,9 +5,9 @@
 #
 #   tests/vc4/csmith-reduce.sh <vc4-prefix> <vc4emul> <kept.c> [out.c]
 #
-# The test creduce runs keeps a candidate only if host gcc builds it with
-# -Wall's uninitialized/return warnings as errors, it runs clean under
-# UBSan, vc4-tcc builds it, it prints "checksum =" in resim, and the two
+# The test creduce runs keeps a candidate only if host gcc -O1 builds it
+# with the uninitialized, array-bounds and return warnings as errors, it
+# runs clean under ASan and UBSan, vc4-tcc builds it, it prints "checksum =" in resim, and the two
 # checksums differ. Needs creduce and CSMITH_INC as for csmith-diff.sh.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,9 +21,11 @@ trap 'rm -rf "$w"' EXIT
 cat > "$w/test.sh" <<EOF
 #!/bin/bash
 defs="-DNO_LONGLONG -DUSE_MATH_MACROS"
-gcc -O0 -w -Werror=uninitialized -Werror=return-type -Werror=implicit-int \\
-	-Werror=implicit-function-declaration -fsanitize=undefined \\
-	-fno-sanitize-recover=all \$defs -I$inc p.c -o host 2>/dev/null || exit 1
+gcc -O1 -w -Werror=uninitialized -Werror=maybe-uninitialized \\
+	-Werror=return-type -Werror=implicit-int -Werror=array-bounds \\
+	-Werror=implicit-function-declaration -Werror=int-conversion \\
+	-fsanitize=address,undefined -fno-sanitize-recover=all \$defs \\
+	-I$inc p.c -o host 2>/dev/null || exit 1
 timeout 10 ./host > host.out 2>/dev/null || exit 1
 grep -q '^checksum = ' host.out || exit 1
 $tcc_dir/vc4-tcc -B$tcc_dir -nostdinc -I$tcc_dir/include -I$newlib -I$inc \$defs \\
