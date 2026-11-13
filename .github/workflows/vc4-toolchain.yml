@@ -35,4 +35,4 @@ jobs:
             --title "$VC4_TOOLCHAIN_TAG (CI toolchain)" --notes "$notes"
         fi
         gh release upload "$VC4_TOOLCHAIN_TAG" --repo "$GITHUB_REPOSITORY" --clobber "$VC4_TOOLCHAIN_ASSET" \
-          "vc4-toolchain-src-$VC4_TOOLCHAIN_REV.tar.zst"
+          "vc4-toolchain-src-${VC4_TOOLCHAIN_REV:0:7}.tar.zst"

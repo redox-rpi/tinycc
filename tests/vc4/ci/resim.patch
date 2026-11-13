@@ -1,5 +1,5 @@
 diff --git a/libresim/src/videocore/VideoCoreIVExecute.hpp b/libresim/src/videocore/VideoCoreIVExecute.hpp
-index 0c6db71..7d372ea 100644
+index 0c6db71..9f6974b 100644
 --- a/libresim/src/videocore/VideoCoreIVExecute.hpp
 +++ b/libresim/src/videocore/VideoCoreIVExecute.hpp
 @@ -562,6 +562,9 @@ private:
@@ -12,15 +12,20 @@ index 0c6db71..7d372ea 100644
  			case OP_ADDS2:
  				registers.setRegister(rd, a + b * 2);
  				break;
-@@ -607,7 +610,7 @@ private:
- 				if ((a & 0x80000000) == 0) {
- 					registers.setRegister(rd, a >> b);
- 				} else {
+@@ -604,11 +607,8 @@ private:
+ 				registers.setRegister(rd, a << b);
+ 				break;
+ 			case OP_ASR:
+-				if ((a & 0x80000000) == 0) {
+-					registers.setRegister(rd, a >> b);
+-				} else {
 -					registers.setRegister(rd, (a >> b) || (0xffffffff << (32 - b)));
-+					registers.setRegister(rd, (a >> b) | (0xffffffff << (32 - b)));
- 				}
+-				}
++				/* local fix: "0xffffffff << 32" for b = 0 gave -1 */
++				registers.setRegister(rd, (uint32_t)((int32_t)a >> (b & 31)));
  				break;
  			case OP_ADDSCALE_5:
+ 				registers.setRegister(rd, a + (b << 5));
 diff --git a/vc4emul/main.cpp b/vc4emul/main.cpp
 index 7590722..abfe712 100644
 --- a/vc4emul/main.cpp

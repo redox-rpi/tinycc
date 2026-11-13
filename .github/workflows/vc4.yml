@@ -45,6 +45,7 @@ jobs:
       run: |
         gh release download "$VC4_TOOLCHAIN_TAG" --repo "$GITHUB_REPOSITORY" \
           --pattern "$VC4_TOOLCHAIN_ASSET" --dir "$RUNNER_TEMP"
+        echo "$VC4_TOOLCHAIN_SHA256  $RUNNER_TEMP/$VC4_TOOLCHAIN_ASSET" | sha256sum -c -
         zstd -dc "$RUNNER_TEMP/$VC4_TOOLCHAIN_ASSET" | tar -C "$RUNNER_TEMP" -xf -
         echo "P=$RUNNER_TEMP/prefix/bin/vc4-elf-" >> "$GITHUB_ENV"
     - name: resim (vc4emul)

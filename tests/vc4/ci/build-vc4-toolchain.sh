@@ -7,7 +7,7 @@
 #   tests/vc4/ci/build-vc4-toolchain.sh <work dir>
 #
 # Writes <work dir>/$VC4_TOOLCHAIN_ASSET (prefix with bin/vc4-elf-*) and
-# <work dir>/vc4-toolchain-src-$VC4_TOOLCHAIN_REV.tar.zst: the complete
+# <work dir>/vc4-toolchain-src-${VC4_TOOLCHAIN_REV:0:7}.tar.zst: the complete
 # source it was built from (GPL: the source goes with the binary).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -42,26 +42,32 @@ for p in $GMP $MPFR $MPC; do
 done
 
 common="--target=vc4-elf --prefix=$prefix --disable-nls --disable-werror"
-b() { rm -rf "$work/build-$1"; mkdir -p "$work/build-$1"; cd "$work/build-$1"; }
+b() { rm -rf "$work/build-$1"; mkdir -p "$work/build-$1"; cd "$work/build-$1"; step=$1; }
+# A failing step shows the end of its log in the Actions output.
+trap 'echo "build step ${step:-?} failed, end of $work/${step:-?}.log:"; tail -n 60 "$work/${step:-?}.log" 2> /dev/null' ERR
 b binutils
-CFLAGS="$cflags" CXXFLAGS="$cxxflags" "$V/binutils-vc4/configure" $common > ../binutils.log
-make -j"$jobs" >> ../binutils.log 2>&1 && make install >> ../binutils.log 2>&1
+CFLAGS="$cflags" CXXFLAGS="$cxxflags" "$V/binutils-vc4/configure" $common > ../binutils.log 2>&1
+make -j"$jobs" >> ../binutils.log 2>&1
+make install >> ../binutils.log 2>&1
 b gcc1
 CFLAGS="$cflags" CXXFLAGS="$cxxflags" "$V/gcc-vc4/configure" $common \
     --disable-ssp --enable-languages=c --without-headers --with-newlib \
     --disable-decimal-float --disable-threads --disable-libatomic \
     --disable-libitm --disable-libsanitizer --disable-libquadmath \
-    --disable-lto --enable-sjlj-exceptions > ../gcc1.log
-make -j"$jobs" >> ../gcc1.log 2>&1 && make install >> ../gcc1.log 2>&1
+    --disable-lto --enable-sjlj-exceptions > ../gcc1.log 2>&1
+make -j"$jobs" >> ../gcc1.log 2>&1
+make install >> ../gcc1.log 2>&1
 b newlib
-"$V/newlib/configure" --target=vc4-elf --prefix="$prefix" > ../newlib.log
-make -j"$jobs" >> ../newlib.log 2>&1 && make install >> ../newlib.log 2>&1
+"$V/newlib/configure" --target=vc4-elf --prefix="$prefix" > ../newlib.log 2>&1
+make -j"$jobs" >> ../newlib.log 2>&1
+make install >> ../newlib.log 2>&1
 b gcc2
 CFLAGS="$cflags" CXXFLAGS="$cxxflags" "$V/gcc-vc4/configure" $common \
     --disable-ssp --enable-languages=c --disable-decimal-float \
     --enable-threads --disable-libatomic --disable-libsanitizer \
-    --disable-libquadmath --disable-lto --enable-sjlj-exceptions --with-newlib > ../gcc2.log
-make -j"$jobs" >> ../gcc2.log 2>&1 && make install >> ../gcc2.log 2>&1
+    --disable-libquadmath --disable-lto --enable-sjlj-exceptions --with-newlib > ../gcc2.log 2>&1
+make -j"$jobs" >> ../gcc2.log 2>&1
+make install >> ../gcc2.log 2>&1
 
 cd "$work"
 "$prefix/bin/vc4-elf-gcc" --version | head -1
@@ -72,5 +78,5 @@ cd "$work"
 tar -C "$work" -cf - prefix | zstd -q -19 -T0 -o "$work/$VC4_TOOLCHAIN_ASSET"
 rm -rf "$V"/*/.git "$V"/.git
 tar -C "$src" -cf - vc4-toolchain $GMP.tar.bz2 $MPFR.tar.bz2 $MPC.tar.gz |
-    zstd -q -19 -T0 -o "$work/vc4-toolchain-src-$VC4_TOOLCHAIN_REV.tar.zst"
+    zstd -q -19 -T0 -o "$work/vc4-toolchain-src-${VC4_TOOLCHAIN_REV:0:7}.tar.zst"
 ls -la "$work"/*.tar.zst
