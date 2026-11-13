@@ -1,0 +1,80 @@
+diff --git a/libresim/src/videocore/VideoCoreIVExecute.hpp b/libresim/src/videocore/VideoCoreIVExecute.hpp
+index 0c6db71..7d372ea 100644
+--- a/libresim/src/videocore/VideoCoreIVExecute.hpp
++++ b/libresim/src/videocore/VideoCoreIVExecute.hpp
+@@ -562,6 +562,9 @@ private:
+ 				// TODO: Signed?
+ 				registers.setRegister(rd, a < b ? a : b);
+ 				break;
++			case OP_BCHG:
++				registers.setRegister(rd, a ^ (1 << b));
++				break;
+ 			case OP_ADDS2:
+ 				registers.setRegister(rd, a + b * 2);
+ 				break;
+@@ -607,7 +610,7 @@ private:
+ 				if ((a & 0x80000000) == 0) {
+ 					registers.setRegister(rd, a >> b);
+ 				} else {
+-					registers.setRegister(rd, (a >> b) || (0xffffffff << (32 - b)));
++					registers.setRegister(rd, (a >> b) | (0xffffffff << (32 - b)));
+ 				}
+ 				break;
+ 			case OP_ADDSCALE_5:
+diff --git a/vc4emul/main.cpp b/vc4emul/main.cpp
+index 7590722..abfe712 100644
+--- a/vc4emul/main.cpp
++++ b/vc4emul/main.cpp
+@@ -1,3 +1,4 @@
++#include <cstdlib>
+ 
+ #include "Processor.hpp"
+ #include "Device.hpp"
+@@ -67,6 +68,24 @@ static std::vector<unsigned char> read_all(std::ifstream& is) {
+ 	return buffer;
+ }
+ 
++static unsigned long long steps;
++#include <map>
++static std::map<uint32_t, unsigned long long> prof;
++static void print_prof(void) {
++	const char *f = getenv("VC4EMUL_PROF");
++	if (!f) return;
++	FILE *o = fopen(f, "w");
++	if (!o) return;
++	for (auto &e : prof)
++		fprintf(o, "%08x %llu\n", e.first, e.second);
++	fclose(o);
++}
++static void print_steps(void) {
++	print_prof();
++	if (getenv("VC4EMUL_COUNT"))
++		fprintf(stderr, "insns: %llu\n", steps);
++}
++
+ int main(int argc, char **argv) {
+ 	
+ 	int i = 1, first_pos_arg = 1, remaining_args;
+@@ -167,11 +186,21 @@ int main(int argc, char **argv) {
+ 	}
+ 	// Start the simulation
+ 	log.info("", "Starting the simulation...");
++	std::atexit(print_steps);
+ 	try {
++		if (getenv("VC4EMUL_PROF")) {
++			while (true) {
++				prof[(uint32_t)processor->getRegister("pc")]++;
++				processor->run(1);
++				steps++;
++			}
++		}
+ 		while (true) {
+-			processor->run(1000);
++			processor->run(100);
++			steps += 100;
+ 		}
+ 	} catch (const std::exception &e) {
++		print_steps(); steps = 0;
+ 		std::cerr << "Exception: " << e.what() << std::endl;
+ 		const std::vector<std::string> &registers = processor->getRegisterList();
+ 		for (auto it = registers.begin(); it != registers.end(); it++) {
