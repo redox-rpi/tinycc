@@ -1,5 +1,8 @@
 # Tests of the VC4 backend on every pull request (WBS 2.15 point 2 in
 # redox-rpi/redox-rpi docs/process/wbs.md). GitHub-hosted runners only.
+# No simulator tests here: resim has no licence, so neither it nor a patch
+# of it goes into this CI; abi-sim, fat-sim and the differential tests run
+# on the build host (redox-rpi scripts/tcc-track.sh) until that is settled.
 name: vc4
 
 on:
@@ -38,7 +41,7 @@ jobs:
         path: rof
         fetch-depth: 0
     - name: packages
-      run: sudo apt-get update -qq && sudo apt-get install -y -qq mtools zstd cmake
+      run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd
     - name: vc4 toolchain (release asset)
       env:
         GH_TOKEN: ${{ github.token }}
@@ -48,17 +51,11 @@ jobs:
         echo "$VC4_TOOLCHAIN_SHA256  $RUNNER_TEMP/$VC4_TOOLCHAIN_ASSET" | sha256sum -c -
         zstd -dc "$RUNNER_TEMP/$VC4_TOOLCHAIN_ASSET" | tar -C "$RUNNER_TEMP" -xf -
         echo "P=$RUNNER_TEMP/prefix/bin/vc4-elf-" >> "$GITHUB_ENV"
-    - name: resim (vc4emul)
-      run: echo "E=$(tests/vc4/ci/build-resim.sh "$RUNNER_TEMP/resim")" >> "$GITHUB_ENV"
     - name: vc4-tcc
       run: ./configure --config-bcheck=no --config-backtrace=no && make vc4-tcc
     - name: enc-test
       run: python3 -I tests/vc4/enc-test.py "$P"
     - name: asm-test
       run: tests/vc4/asm-test.sh "$P"
-    - name: abi-sim
-      run: tests/vc4/abi-sim.sh "$P" "$E"
-    - name: fat-sim
-      run: tests/vc4/fat-sim.sh rof "$P" "$E"
     - name: bootcode-build LINK=tcc
       run: LINK=tcc tests/vc4/bootcode-build.sh rof "$P"
