@@ -48,6 +48,9 @@ trap 'rm -rf "$t"' EXIT
 # the integer subset: no float, no 64-bit types, no bit-fields or packed
 # structs; struct arguments are rare, programs with them count as unsupported
 opts="--no-float --no-longlong --no-math64 --no-bitfields --no-packed-struct"
+# csmith's runtime: 32-bit checksum (NO_LONGLONG) and the safe-math
+# macros, since safe_math.h's functions include float ones vc4-tcc rejects
+defs="-DNO_LONGLONG -DUSE_MATH_MACROS"
 
 "${prefix}gcc" -O1 -fno-jump-tables -c "$here/sim-rt.c" -o "$t/rt.o"
 
@@ -55,14 +58,14 @@ one() { # seed -> prints "<class> <seed>"
 	local s=$1 d="$t/$1" r
 	mkdir "$d"
 	"$csmith" $opts --seed "$s" -o "$d/p.c" > /dev/null 2>&1 || { echo "host $s"; return; }
-	if ! gcc -O0 -w -I"$CSMITH_INC" "$d/p.c" -o "$d/host" 2> /dev/null; then
+	if ! gcc -O0 -w $defs -I"$CSMITH_INC" "$d/p.c" -o "$d/host" 2> /dev/null; then
 		echo "host $s"; return
 	fi
 	r=0; timeout "$timeout" "$d/host" > "$d/host.out" 2> /dev/null || r=$?
 	[ $r = 124 ] && { echo "timeout $s"; return; }
 	grep -q '^checksum = ' "$d/host.out" || { echo "host $s"; return; }
 	if ! "$tcc_dir/vc4-tcc" -B"$tcc_dir" -nostdinc -I"$tcc_dir/include" -I"$newlib" \
-		-I"$CSMITH_INC" -w -c "$d/p.c" -o "$d/p.o" 2> "$d/tcc.err"; then
+		-I"$CSMITH_INC" $defs -w -c "$d/p.c" -o "$d/p.o" 2> "$d/tcc.err"; then
 		if grep -q 'not supported' "$d/tcc.err" && ! grep -q 'internal' "$d/tcc.err"; then
 			echo "unsupported $s"
 		else # a compiler error on valid C is a bug
@@ -96,7 +99,7 @@ one() { # seed -> prints "<class> <seed>"
 	rm -rf "$d"
 }
 export -f one
-export t timeout keep prefix emul tcc_dir newlib csmith opts CSMITH_INC
+export t timeout keep prefix emul tcc_dir newlib csmith opts defs CSMITH_INC
 
 seq "$seed0" $((seed0 + count - 1)) | xargs -P "$jobs" -I{} bash -c 'one {}' > "$t/results"
 
