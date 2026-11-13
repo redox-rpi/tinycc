@@ -30,9 +30,9 @@ jobs:
         . tests/vc4/ci/pins.sh
         cd "$RUNNER_TEMP/tc"
         notes="vc4-elf binutils, GCC 6.2.1 (C) and newlib from $VC4_TOOLCHAIN_REPO at $VC4_TOOLCHAIN_REV, built on ubuntu-24.04 x86_64 by tests/vc4/ci/build-vc4-toolchain.sh (commit $GITHUB_SHA). For the vc4 CI of this repository. The source tarball is the complete source it was built from (GPL)."
-        if ! gh release view "$VC4_TOOLCHAIN_TAG" > /dev/null 2>&1; then
-          gh release create "$VC4_TOOLCHAIN_TAG" --target "$GITHUB_SHA" --prerelease \
+        if ! gh release view "$VC4_TOOLCHAIN_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          gh release create "$VC4_TOOLCHAIN_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "$VC4_TOOLCHAIN_TAG (CI toolchain)" --notes "$notes"
         fi
-        gh release upload "$VC4_TOOLCHAIN_TAG" --clobber "$VC4_TOOLCHAIN_ASSET" \
+        gh release upload "$VC4_TOOLCHAIN_TAG" --repo "$GITHUB_REPOSITORY" --clobber "$VC4_TOOLCHAIN_ASSET" \
           "vc4-toolchain-src-$VC4_TOOLCHAIN_REV.tar.zst"
