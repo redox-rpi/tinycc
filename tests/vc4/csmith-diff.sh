@@ -9,7 +9,7 @@
 #
 #   CSMITH=path      csmith binary (default: csmith in PATH)
 #   CSMITH_INC=dir   csmith's runtime headers (csmith.h; default: next to
-#                    the binary, ../include or ../include/csmith-*)
+#                    the binary, ../include, ../include/csmith or csmith-*)
 #   SEED=n           first seed (default: from the date, so each run differs)
 #   JOBS=n           parallel programs (default: nproc)
 #   TIMEOUT=s        per run, host and resim (default 10)
@@ -32,7 +32,7 @@ csmith=${CSMITH:-$(command -v csmith || true)}
 [ -x "$csmith" ] || { echo "csmith not found (set CSMITH)" >&2; exit 2; }
 if [ -z "${CSMITH_INC:-}" ]; then
 	d=$(dirname "$(readlink -f "$csmith")")
-	for c in "$d" "$d/../include" "$d"/../include/csmith-*; do
+	for c in "$d" "$d/../include" "$d/../include/csmith" "$d"/../include/csmith-*; do
 		[ -f "$c/csmith.h" ] && { CSMITH_INC=$(cd "$c" && pwd); break; }
 	done
 fi
