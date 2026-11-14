@@ -8276,8 +8276,16 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
                 break;
             case VT_PTR:
             case VT_INT:
-	        if (vtop->r & VT_SYM)
+	        if (vtop->r & VT_SYM) {
+#if SHT_RELX == SHT_RELA
+	          /* 32-bit RELA (VC4): the offset goes into the addend, as
+	             GNU ld ignores the data word */
+	          greloca(sec, vtop->sym, c, R_DATA_PTR, val);
+	          break;
+#else
 	          greloc(sec, vtop->sym, c, R_DATA_PTR);
+#endif
+	        }
 	        write32le(ptr, val);
 	        break;
 #endif

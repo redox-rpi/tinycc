@@ -88,6 +88,18 @@ static short ss[3] = { -1, -32768, 1234 };
 static unsigned short us[3] = { 65535, 32768, 1234 };
 int gi = 42;
 int *gp = &gi;               /* data relocation */
+/* data relocations with an offset: the offset must be in the RELA addend,
+   GNU ld ignores the data word (csmith, tinycc#6) */
+static int ga[4] = { 10, 20, 30, 40 };
+static struct { int a; short b, c; } gs = { 1, 2, 3 };
+static int *gpa = &ga[2];
+static short *gpb = &gs.c;
+static char *gstr = "abcdef" + 3;
+static int *gpt[2] = { &ga[1], &ga[3] };
+static int data_offsets(void)
+{
+    return *gpa + *gpb + *gstr + *gpt[0] + *gpt[1];
+}
 
 static int narrow(void)
 {
@@ -217,4 +229,5 @@ void run_tests(void)
     printf("structs %d\n", structs());
     printf("strings %d\n", strings("hello, VPU"));
     printf("addr_cast %d\n", addr_cast());
+    printf("data_offsets %d\n", data_offsets());
 }
