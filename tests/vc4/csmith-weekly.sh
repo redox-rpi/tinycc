@@ -41,6 +41,7 @@ git_auth() {
 log "csmith weekly $week, $branch, $count programs"
 git -C "$root" fetch -q origin
 git -C "$root" checkout -q --detach "origin/$branch"
+[ -f "$root/config.mak" ] || (cd "$root" && ./configure --config-bcheck=no --config-backtrace=no > /dev/null)
 make -C "$root" -s vc4-tcc > /dev/null
 log "vc4-tcc $(git -C "$root" rev-parse --short=8 HEAD)"
 
