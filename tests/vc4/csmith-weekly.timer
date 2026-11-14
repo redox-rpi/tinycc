@@ -1,0 +1,12 @@
+# Starts csmith-weekly.service once a week; see that file for installing.
+# Tuesday midday, away from the nightly image build at 03:30 UTC, with the
+# result in before the sprint cut-off on Friday.
+[Unit]
+Description=Weekly csmith run, Tuesday 12:00 UTC
+
+[Timer]
+OnCalendar=Tue *-*-* 12:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

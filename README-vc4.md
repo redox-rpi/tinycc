@@ -51,12 +51,47 @@ submodule). With CMake 4 and a current g++ it needs
 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` and a compiler wrapper that adds
 `-include cstdint -include cstring -include cassert`. Two resim gaps
 matter here: its `asr` returns 1 for every negative value (`||` for `|`
-in `libresim/src/videocore/VideoCoreIVExecute.hpp`, case `OP_ASR`; fix
-that line before building), and it has no `ldsb`, so vc4-tcc loads signed
+in `libresim/src/videocore/VideoCoreIVExecute.hpp`, case `OP_ASR`), and
+even with that fixed a shift by 0 of a negative value gives -1
+(`0xffffffff << 32`); replace the case's body with
+`registers.setRegister(rd, (uint32_t)((int32_t)a >> (b & 31)));` before
+building (abi-test's `asr0` line fails without it). It has no `ldsb`, so vc4-tcc loads signed
 bytes with `ldb` and a shift pair. resim also lacks `switch` and
 `bitflip #imm`: newlib's `printf` and GCC's `fat.c` do not run there.
 `stm r6-r7,lr` stores lr at the top in resim; vc4-tcc's variadic
 prologue therefore saves r6, r7 and lr one by one.
+
+## Differential test with random programs (csmith)
+
+`tests/vc4/csmith-diff.sh <vc4-prefix> <vc4emul> [count]` (tinycc#3,
+WBS 2.15 point 4): csmith writes programs in the supported integer subset
+(`--no-float --no-longlong --no-math64 --no-bitfields --no-packed-struct`);
+each is built by host gcc and by vc4-tcc, the vc4-tcc build runs in
+resim, and the `checksum =` lines must be the same. Programs vc4-tcc
+rejects as "not supported" (struct arguments, …) count as unsupported, not
+as mismatches; a compiler error on valid C, a crash in resim or a
+different checksum count as mismatches, and the program is kept
+(`KEEP=dir`) for reduction with creduce. Results: one JSON line, printed
+last and appended to `OUT=file`:
+
+    {"kind":"csmith","date":…,"week":"2026-W46","tinycc":"<head>","csmith":"<version>",
+     "seed":…,"programs":…,"same":…,"mismatches":…,"unsupported":…,"timeouts":…,
+     "host_failures":…,"resim_gaps":…,"kept":"<dir>"}
+
+Other knobs: `CSMITH`, `CSMITH_INC` (csmith.h), `SEED`, `JOBS` (default
+nproc), `TIMEOUT` (default 10 s per run). resim runs about 20 M VC4
+instructions per second per core. Before a mismatch becomes a bug, build
+the program with vc4-elf-gcc too (`-fno-jump-tables`, in resim where it
+has no `ldsb`): when GCC's build agrees with TCC's, it is a resim gap (the
+first run found `asr` by 0 that way). csmith itself is not part of this
+repository.
+
+Weekly run: `tests/vc4/csmith-weekly.sh`, started by the systemd user
+units `csmith-weekly.service` and `.timer` (Tuesday 12:00 UTC) on the
+build host. It builds vc4-tcc from the newest `main` in a clone of its own,
+runs 1,000 programs (seed from the ISO week, `TIMEOUT=30`) and appends the
+JSON line to `tcc.jsonl` in redox-rpi/pi-tests. Kept mismatches are
+reduced by hand with `csmith-reduce.sh` into an issue and a test.
 
 ## Code size and speed (branch `vc4-opt`, experiment)
 

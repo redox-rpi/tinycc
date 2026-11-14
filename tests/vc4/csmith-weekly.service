@@ -1,0 +1,15 @@
+# Weekly csmith run (csmith-weekly.sh, tinycc#3). Install on the build host
+# as a systemd user unit, with a clone of its own for CSMITH_ROOT:
+#   cp tests/vc4/csmith-weekly.service tests/vc4/csmith-weekly.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now csmith-weekly.timer
+[Unit]
+Description=Weekly csmith differential test of vc4-tcc
+
+[Service]
+Type=oneshot
+# The script checks out the branch in its clone, which may change the file
+# while bash reads it, so the service runs a copy. For systemd, $$ is $.
+Environment=CSMITH_ROOT=%h/rbc-build/tcc-csmith
+Environment=CSMITH_BRANCH=main
+ExecStart=/bin/bash -lc 'mkdir -p ~/rbc-build/tcc-csmith-work; copy=$$(mktemp); cp "$$CSMITH_ROOT/tests/vc4/csmith-weekly.sh" "$$copy"; bash "$$copy" >> ~/rbc-build/tcc-csmith-work/$$(date -u +%%G-W%%V).log 2>&1; r=$$?; rm -f "$$copy"; exit $$r'
+TimeoutStartSec=6h
