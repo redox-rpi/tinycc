@@ -86,6 +86,13 @@ has no `ldsb`): when GCC's build agrees with TCC's, it is a resim gap (the
 first run found `asr` by 0 that way). csmith itself is not part of this
 repository.
 
+Weekly run: `tests/vc4/csmith-weekly.sh`, started by the systemd user
+units `csmith-weekly.service` and `.timer` (Tuesday 12:00 UTC) on the
+build host. It builds vc4-tcc from the newest `main` in a clone of its own,
+runs 1,000 programs (seed from the ISO week, `TIMEOUT=30`) and appends the
+JSON line to `tcc.jsonl` in redox-rpi/pi-tests. Kept mismatches are
+reduced by hand with `csmith-reduce.sh` into an issue and a test.
+
 ## Code size and speed (branch `vc4-opt`, experiment)
 
 | | before (`vc4` dbee1ac0) | step 1 (3e88adad) | step 2: register variables | GCC 6.2.1 `-Os` |
