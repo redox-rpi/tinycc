@@ -1,8 +1,8 @@
 # TinyCC with a VideoCore IV (VPU) backend
 
 Fork of TinyCC `mob` (base 70adbb12) for the redox-rpi open Pi firmware.
-Plan, decisions and milestones: `docs/tcc-vc4.md` in
-redox-rpi/rpi-open-firmware (branch `redox-rpi`).
+Decisions and licence: [docs/vc4-decisions.md](docs/vc4-decisions.md);
+the parts of the backend: [docs/vc4-components.md](docs/vc4-components.md).
 
 **State: spike.** Integer subset (load/store, arithmetic, compares,
 branches, calls, frames, variadic functions, struct return), a VC4
