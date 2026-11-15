@@ -195,6 +195,10 @@ static int strings(const char *p)
 
 /* every call into a variable first: the order in which printf's arguments
    are evaluated is unspecified, and the host's differs from TCC's */
+/* asr by a variable 0 (resim needs a fix for it, see README-vc4.md) */
+static volatile int zero = 0;
+static int asr0(int a) { return a >> zero; }
+
 /* the address of a loop variable taken behind a cast: it must stay in
    memory (review of PR #1) */
 static void set7(int *p) { *p += 7; }
@@ -230,4 +234,6 @@ void run_tests(void)
     printf("strings %d\n", strings("hello, VPU"));
     printf("addr_cast %d\n", addr_cast());
     printf("data_offsets %d\n", data_offsets());
+    a = asr0(-1000001); b = asr0(77);
+    printf("asr0 %d %d\n", a, b);
 }
