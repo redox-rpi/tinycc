@@ -60,6 +60,21 @@ enum {
 
 /* ---- 16 bit ---- */
 
+/* Vector unit, only the form the firmware needs (rpi-open-firmware start.S,
+   vpu_vector_touch): v16mov / v32mov with the result discarded ("-") and
+   a 6-bit immediate. rep_log2 0 gives the 48-bit form; 1..6 (REP2..REP64)
+   the 80-bit form. Layout found black-box against vc4-elf-as. */
+static inline void vc4_vmov_discard_imm(int v32, int imm, int rep_log2)
+{
+    VC4_EMIT16((rep_log2 ? 0xfc00 | rep_log2 : 0xf400) | (v32 ? 0x0200 : 0));
+    VC4_EMIT16(0xe038);
+    VC4_EMIT16(0x0400 | (imm & 0x3f));
+    if (rep_log2) {
+        VC4_EMIT16(0x03c0);
+        VC4_EMIT16(0x0000);
+    }
+}
+
 static inline void vc4_nop(void) { VC4_EMIT16(0x0001); }
 static inline void vc4_rts(void) { VC4_EMIT16(0x005a); }
 /* b rN / bl rN */

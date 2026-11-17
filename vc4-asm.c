@@ -366,6 +366,36 @@ static void vc4_asm_branch(TCCState *s1, int cc, int link)
     }
 }
 
+/* v16mov / v32mov -, #imm [REPn] (vc4_vmov_discard_imm) */
+static void vc4_asm_vmov(TCCState *s1, int v32)
+{
+    ExprValue e;
+    int rep = 0;
+    const char *r;
+
+    if (tok != '-')
+        tcc_error("VC4: only 'v16mov/v32mov -, imm [REPn]' is supported");
+    next();
+    skip(',');
+    if (tok == '#')
+        next();
+    asm_expr(s1, &e);
+    if (e.sym || e.v < 0 || e.v > 63)
+        tcc_error("VC4: vector mov immediate must be 0..63");
+    if (tok >= TOK_IDENT) {
+        r = get_tok_str(tok, NULL);
+        if (!strcmp(r, "REP2")) rep = 1;
+        else if (!strcmp(r, "REP4")) rep = 2;
+        else if (!strcmp(r, "REP8")) rep = 3;
+        else if (!strcmp(r, "REP16")) rep = 4;
+        else if (!strcmp(r, "REP32")) rep = 5;
+        else if (!strcmp(r, "REP64")) rep = 6;
+        else tcc_error("VC4: unknown vector modifier '%s'", r);
+        next();
+    }
+    vc4_vmov_discard_imm(v32, (int)e.v, rep);
+}
+
 ST_FUNC void asm_opcode(TCCState *s1, int opcode)
 {
     const char *s = get_tok_str(opcode, NULL);
@@ -395,6 +425,8 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
             vc4_asm_ldst(s1, vc4_ldst_names[i].sz);
             return;
         }
+    if (!strcmp(s, "v16mov")) { vc4_asm_vmov(s1, 0); return; }
+    if (!strcmp(s, "v32mov")) { vc4_asm_vmov(s1, 1); return; }
     if (!strcmp(s, "b")) { vc4_asm_branch(s1, VC4_AL, 0); return; }
     if (!strcmp(s, "bl")) { vc4_asm_branch(s1, VC4_AL, 1); return; }
     if (s[0] == 'b' && strlen(s) == 3 && (cc = vc4_parse_cc(s + 1)) >= 0) {
