@@ -21,10 +21,10 @@ Targets and switching (draft, maintainer 2026-11-17):
   (REQ-TCCVC-3: B1–B4 against GCC `-Os`/`-O2`) are an intermediate goal.
   They set the order of the work; they are not a plan to switch.
 - Once vc4-tcc is better than GCC, at least under some conditions,
-  shipping the firmware built with vc4-tcc can be considered. That is the
-  maintainer's decision, by RFC.
+  shipping the firmware built with vc4-tcc can be considered, possibly
+  only for those conditions. That is the maintainer's decision, by RFC.
 - What will run on the VPU is still open (the BCM2837 has two VPU cores),
-  so the benchmarks may change with it. Optimisation work
+  so the benchmarks follow the real VPU workloads as they appear. Optimisation work
   ([#16](https://github.com/redox-rpi/tinycc/issues/16)) keeps the use of
   both cores in mind.
 
