@@ -366,7 +366,9 @@ static void vc4_asm_branch(TCCState *s1, int cc, int link)
     }
 }
 
-/* v16mov / v32mov -, #imm [REPn] (vc4_vmov_discard_imm) */
+/* v16mov / v32mov -, #imm [REPn] (vc4_vmov_discard_imm). Immediate 0..63
+   only (vc4-elf-as puts larger ones in a wider field we do not emit);
+   REPn upper case only, as vc4-elf-as. */
 static void vc4_asm_vmov(TCCState *s1, int v32)
 {
     ExprValue e;

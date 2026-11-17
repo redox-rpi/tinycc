@@ -57,6 +57,14 @@ About the VPU and its toolchain:
 - `vc4-elf-ld` rejects TinyCC's `.eh_frame`; it is off for VC4, as for ARM.
 - `vc4-elf-ld` takes the RELA addend and ignores the data word, so data
   relocations must carry their offset in the addend ([#6](https://github.com/redox-rpi/tinycc/issues/6)).
+- The firmware's SD code uses one vector instruction, `v16mov -,imm REPn`,
+  as a delay. vc4-tcc's assembler knows only this form: `v16mov`/`v32mov`
+  to `-` (discard) with an immediate 0..63 and an optional `REP2`..`REP64`
+  in upper case, as `vc4-elf-as` accepts. Without REP it is 48 bits
+  (`f400`/`f600`, `e038`, `0400|imm`), with REP 80 bits (`fc00|log2(n)`,
+  same middle, then `03c0 0000`). `vc4-elf-as` puts immediates from 64 up
+  in a wider field; vc4-tcc rejects them. No other vector instructions,
+  and the simulator has none.
 - TinyCC has no linker scripts. The firmware's chain trampoline is linked
   where it is stored and copied at run time, with `__start_X`/`__stop_X`
   symbols (rpi-open-firmware fat-boot a8bcbe7); `-Wl,-Map=FILE` lets the

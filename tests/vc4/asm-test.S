@@ -96,6 +96,14 @@ irp_\n:
 	.endr
 	bl	irp_2
 
+	/* vector mov to "-" (the only vector form vc4-tcc knows); immediates
+	   0..63, REPn upper case only, as vc4-elf-as */
+	v16mov	-, 0
+	v16mov	-, #63
+	v32mov	-, 7
+	v16mov	-, 9 REP2
+	v32mov	-, 63 REP64
+
 	.data
 data_label:
 	.long	0x11223344, start, irp_1

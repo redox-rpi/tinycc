@@ -32,3 +32,14 @@ else
 	diff "$t/gas.dis" "$t/tcc.dis" | head -40
 	echo "asm FAIL"; exit 1
 fi
+
+# forms vc4-tcc must reject: immediate 64 (vc4-elf-as takes it, but in a
+# wider encoding vc4-tcc does not emit) and lower-case rep (vc4-elf-as
+# rejects it too)
+for bad in 'v16mov -, 64' 'v16mov -, 5 rep32'; do
+	printf '\t%s\n' "$bad" > "$t/bad.S"
+	if "$tcc_dir/vc4-tcc" -B"$tcc_dir" -c "$t/bad.S" -o "$t/bad.o" 2>/dev/null; then
+		echo "asm FAIL: vc4-tcc accepted '$bad'"; exit 1
+	fi
+done
+echo "asm rejects ok"
