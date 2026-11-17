@@ -13,9 +13,23 @@ One small compiler that builds the VPU part of the open Pi firmware
 (rpi-open-firmware `bootcode/`), first on the build host and later on the
 Pi under Redox, where TinyCC already runs (redox-rpi experiment `tcc`).
 It is an investment in our own, independent toolchain: the firmware is
-built with GCC 6.2.1, and vc4-tcc is tested next to it. Switching is a
-separate decision of the maintainer (by RFC); there are no switch criteria
-yet. Size and speed against GCC are tracked as KPIs, not targets.
+built with GCC 6.2.1, and vc4-tcc is tested next to it.
+
+Targets and switching (draft, maintainer 2026-11-17):
+- The firmware stays on GCC as long as vc4-tcc is not at least as good.
+- The targets in [#13](https://github.com/redox-rpi/tinycc/issues/13)
+  (REQ-TCCVC-3: B1–B4 against GCC `-Os`/`-O2`) are an intermediate goal.
+  They set the order of the work; they are not a plan to switch.
+- Once vc4-tcc is better than GCC, at least under some conditions,
+  shipping the firmware built with vc4-tcc can be considered. That is the
+  maintainer's decision, by RFC.
+- What will run on the VPU is still open (the BCM2837 has two VPU cores),
+  so the benchmarks may change with it. Optimisation work
+  ([#16](https://github.com/redox-rpi/tinycc/issues/16)) keeps the use of
+  both cores in mind.
+
+The KPIs ([#8](https://github.com/redox-rpi/tinycc/issues/8)) track size
+and speed against GCC; the targets are in #13.
 
 ## Decisions
 
