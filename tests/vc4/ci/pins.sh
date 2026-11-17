@@ -14,3 +14,8 @@ VC4_TOOLCHAIN_SHA256=ac4564e681e0fcc93fc45a08c9f5320654d97d3753f1efb7e4f2f1aad7d
 # rpi-open-firmware branch fat-boot, for fat-sim.sh and bootcode-build.sh.
 FAT_BOOT_REPO=redox-rpi/rpi-open-firmware
 FAT_BOOT_REV=a8bcbe7a634661fea5075027ed6edb5c3a4c635c
+
+# VPU simulator for abi-sim and fat-sim: our fork of mgottschlag/resim (MIT),
+# the same commit as redox-rpi/vc4-toolchain's toolchain.lock.
+RESIM_REPO=redox-rpi/resim
+RESIM_REV=4b542e75602d6a3f94c367a3e0e3721aded5586c
