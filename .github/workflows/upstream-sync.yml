@@ -1,0 +1,191 @@
+# Weekly look at upstream TinyCC (repo.or.cz, branch mob): test-merge it
+# into main, run the vc4 workflow's tests on the result and offer it as a
+# PR "upstream sync YYYY-Www". It never merges into main; the maintainer
+# does, with a merge commit. A merge conflict becomes an issue instead.
+# Also keeps this repository's mob a plain copy of upstream (fast-forward
+# only). See docs/vc4-decisions.md.
+#
+# If the repository does not let Actions create pull requests (Settings ->
+# Actions -> "Allow GitHub Actions to create and approve pull requests"),
+# the run opens an issue with the compare link instead.
+name: upstream sync
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+
+env:
+  UPSTREAM: https://repo.or.cz/tinycc.git
+
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+    outputs:
+      week: ${{ steps.merge.outputs.week }}
+      branch: ${{ steps.merge.outputs.branch }}
+      state: ${{ steps.merge.outputs.state }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: main
+        fetch-depth: 0
+    - id: merge
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        git config user.name 'github-actions[bot]'
+        git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+        week=$(date -u +%G-W%V)
+        branch=upstream-sync/$week
+        echo "week=$week" >> "$GITHUB_OUTPUT"
+        echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+        git fetch -q "$UPSTREAM" mob
+        up=$(git rev-parse FETCH_HEAD)
+        if git merge-base --is-ancestor origin/mob "$up"; then
+          git push -q origin "$up:refs/heads/mob"
+        else
+          echo "::warning::origin/mob is not an ancestor of upstream mob, not updated"
+        fi
+
+        if [ "$(git rev-list --count HEAD.."$up")" = 0 ]; then
+          echo "main already has upstream mob ${up:0:8}"
+          echo "state=current" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # a second run in the same week builds on that week's branch
+        if git ls-remote --exit-code origin "refs/heads/$branch" > /dev/null; then
+          git fetch -q origin "$branch"
+          git checkout -q -B "$branch" FETCH_HEAD
+          heads="origin/main $up"
+        else
+          git checkout -q -b "$branch"
+          heads=$up
+        fi
+        for h in $heads; do
+          git merge-base --is-ancestor "$h" HEAD && continue
+          if ! git merge -q --no-edit -m "upstream sync $week: merge ${h/#$up/tinycc mob ${up:0:8}}" "$h"; then
+            files=$(git diff --name-only --diff-filter=U | sed 's/^/- `/; s/$/`/')
+            git merge --abort
+            title="upstream sync $week: merge conflict"
+            {
+              echo "Merging upstream TinyCC mob (\`${up:0:8}\`) into \`main\` conflicts in:"
+              echo
+              echo "$files"
+              echo
+              echo "Upstream commits not in main:"
+              echo
+              git log --format='- %h %ad %an: %s' --date=short origin/main.."$up"
+              echo
+              echo "Resolve by hand on a branch \`$branch\` and open the PR \"upstream sync $week\" (merge commit, no squash)."
+              echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            } > "$RUNNER_TEMP/issue.md"
+            num=$(gh issue list --state open --search "\"$title\" in:title" --json number -q '.[0].number')
+            if [ -n "$num" ]; then
+              gh issue comment "$num" --body-file "$RUNNER_TEMP/issue.md"
+            else
+              gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue.md"
+            fi
+            echo "state=conflict" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+        done
+        git push -q origin "HEAD:refs/heads/$branch"
+        echo "state=merged" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: merge
+    if: needs.merge.outputs.state == 'merged'
+    uses: ./.github/workflows/vc4.yml
+    with:
+      ref: ${{ needs.merge.outputs.branch }}
+
+  pr:
+    needs: [merge, test]
+    if: always() && needs.merge.outputs.state == 'merged'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - env:
+        GH_TOKEN: ${{ github.token }}
+        WEEK: ${{ needs.merge.outputs.week }}
+        BRANCH: ${{ needs.merge.outputs.branch }}
+        TESTS: ${{ needs.test.result }}
+      run: |
+        run_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+        git fetch -q origin main "$BRANCH"
+        tip=$(git rev-parse --short "origin/$BRANCH")
+        commits=$(git log --no-merges --format='- %h %ad %an: %s' --date=short "origin/main..origin/$BRANCH")
+        title="upstream sync $WEEK"
+        arm=
+        if grep -qiE 'arm64|aarch64' <<< "$commits"; then
+          arm='**aarch64:** this sync has arm64 changes; the TCC-on-Redox track (aarch64) builds from this fork too.'
+        fi
+        cat > "$RUNNER_TEMP/body.md" <<EOF
+        Weekly merge of upstream TinyCC ([repo.or.cz](https://repo.or.cz/tinycc.git), branch \`mob\`) into \`main\`, made by the upstream-sync workflow.
+
+        ## What
+        Upstream commits not in \`main\` yet:
+
+        $commits
+
+        $arm
+
+        ## Why
+        The fork stays close to upstream, so upstream fixes arrive in small steps and the VC4 backend stays easy to offer upstream ([docs/vc4-decisions.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/docs/vc4-decisions.md)).
+
+        ## Test plan
+        The workflow runs the \`vc4\` workflow (native \`make test\`, \`TCC_LOOP_ROTATE\`, vc4 encoder/assembler/simulator/bootcode tests) on this branch and posts the result as a comment. Merge with a merge commit, not squash, so upstream's commits keep their hashes.
+        EOF
+        result="Tests on \`$tip\`: **$TESTS** ([run]($run_url))."
+
+        num=$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number')
+        if [ -z "$num" ] && gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"; then
+          num=$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number')
+        fi
+        if [ -n "$num" ]; then
+          gh pr comment "$num" --body "$result"
+          gh pr list --state open --search 'upstream sync in:title' --json number,headRefName \
+            -q ".[] | select(.headRefName != \"$BRANCH\" and (.headRefName | startswith(\"upstream-sync/\"))) | .number" |
+          while read -r old; do
+            gh pr close "$old" --comment "Superseded by #$num ($title)."
+          done
+        else
+          # Actions may not create PRs here: an issue with the compare link
+          ititle="$title: ready for a PR"
+          {
+            echo "The branch \`$BRANCH\` merges upstream TinyCC mob into \`main\`; the workflow could not open the PR itself."
+            echo
+            echo "Open it: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$BRANCH?expand=1 (title \"$title\")"
+            echo
+            echo "$result"
+            echo
+            cat "$RUNNER_TEMP/body.md"
+          } > "$RUNNER_TEMP/issue.md"
+          inum=$(gh issue list --state open --search "\"$ititle\" in:title" --json number -q '.[0].number')
+          if [ -n "$inum" ]; then
+            gh issue comment "$inum" --body "$result"
+          else
+            gh issue create --title "$ititle" --body-file "$RUNNER_TEMP/issue.md"
+          fi
+        fi
+        [ "$TESTS" = success ]

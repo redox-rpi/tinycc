@@ -23,6 +23,7 @@ yet. Size and speed against GCC are tracked as KPIs, not targets.
 |---|---|
 | Where | This repository, a real fork of TinyCC `mob`, not a folder in the firmware repository. The firmware build points at a fixed commit (pinned in [redox-rpi/vc4-toolchain](https://github.com/redox-rpi/vc4-toolchain)). |
 | Branches | `mob` is upstream, unchanged; `main` is our fork. Changes reach `main` by PR, reviewed by the coordinator or Quality and merged by the maintainer. Docs go straight to `main`. |
+| Upstream | Upstream `mob` (repo.or.cz) is merged into `main` every week: the `upstream-sync` workflow (Monday 06:00 UTC, or by hand) test-merges it, runs the `vc4` workflow's tests on the result and offers it as a PR "upstream sync YYYY-Www" on branch `upstream-sync/YYYY-Www`; a conflict becomes an issue. It never merges; the maintainer merges with a merge commit (no squash), so upstream's commits keep their hashes. It also keeps this repository's `mob` equal to upstream. The aarch64 TCC-on-Redox track uses the same fork, so arm64 changes are flagged in the PR. |
 | Redox patches | The four patches of the redox-rpi `tcc` experiment move into this fork later, as a separate step. |
 | Generic code | Changes outside the VC4 files stay small and, where they change behaviour, limited to VC4 or behind a define (`TCC_LOOP_ROTATE`); `README-vc4.md` lists them. |
 | Objects | ELF `EM_VIDEOCORE3` (137) with RELA relocations and the relocation numbers of the vc4 binutils, so TCC and GCC objects link together with either linker. |
