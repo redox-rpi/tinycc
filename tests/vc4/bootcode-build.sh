@@ -31,9 +31,19 @@ trap 'rm -rf "$out"' EXIT
 [ -e "$fw/firmware" ] || ln -s . "$fw/firmware"
 cd "$fw/bootcode"
 make -s MONITOR=1 CROSS_COMPILE="$prefix" >/dev/null
+# the -D options the Makefile gives GCC (MONITOR, HDMI, MBOX_TRACE, ...),
+# so both compilers see the same configuration; BUILD_ID stays "tcc".
+# eval splits CFLAGS as make's shell would, so quoted values such as
+# -DBUILD_ID='"..."' stay one word; the text comes from the checkout's own
+# Makefile (as trusted as running make on it), not from outside input.
+defs=()
+eval "set -- $(make -pn MONITOR=1 CROSS_COMPILE="$prefix" 2>/dev/null | sed -n 's/^CFLAGS := //p')"
+for a; do case $a in -DBUILD_ID=*) ;; -D*) defs+=("$a") ;; esac; done
+[ ${#defs[@]} -gt 0 ] || { echo "no -D options in bootcode/Makefile's CFLAGS (make -pn found no 'CFLAGS :=' line?)" >&2; exit 1; }
 files=${TCC_FILES:-$(cd build && ls *.c.o *.S.o | sed 's/\.c\.o$//; s/\.o$//')}
 
 text() { "${prefix}size" "$1" | awk 'NR==2 { print $1 }'; }
+echo "text sizes of the MONITOR=1 build (the release build has no monitor)"
 printf '%-10s %8s %8s %6s\n' file "GCC -Os" TCC factor
 gt=0 tt=0 objs=$(cd build && ls *.c.o *.S.o)
 for f in $files; do
@@ -43,8 +53,8 @@ for f in $files; do
 			-D__VIDEOCORE4__ -c "$f" -o "$out/$f-tcc.o" ;;
 	*)	src=$f.c obj=build/$f.c.o
 		"$tcc_dir/vc4-tcc" -B"$tcc_dir" -nostdinc -I"$tcc_dir/include" \
-			-I"$newlib" -I. -I.. -I../vc4_include -D__VIDEOCORE4__ \
-			-DMONITOR=1 -DBUILD_ID='"tcc"' -c "$src" -o "$out/$f-tcc.o" ;;
+			-I"$newlib" -I. -I.. -I../vc4_include "${defs[@]}" \
+			-DBUILD_ID='"tcc"' -c "$src" -o "$out/$f-tcc.o" ;;
 	esac
 	g=$(text "$obj") t=$(text "$out/$f-tcc.o")
 	gt=$((gt + g)) tt=$((tt + t))

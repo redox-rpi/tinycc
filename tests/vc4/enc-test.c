@@ -182,6 +182,13 @@ int main(int argc, char **argv)
     T(0, vc4_bl32(0x3fffffe), "bl 0x%x", start + 0x3fffffe);
     T(0, vc4_bl32(-8), "bl 0x%x", start - 8);
 
+    /* vector unit: only v16mov/v32mov -, imm [REPn] (firmware start.S) */
+    T(1, vc4_vmov_discard_imm(0, 0, 0), "v16mov -,0x0");
+    T(1, vc4_vmov_discard_imm(0, 63, 0), "v16mov -,0x3f");
+    T(1, vc4_vmov_discard_imm(1, 7, 0), "v32mov -,0x7");
+    for (i = 1; i <= 6; i++)
+        T(1, vc4_vmov_discard_imm(i & 1, i * 9, i), "v%dmov -,%d REP%d", i & 1 ? 32 : 16, i * 9, 1 << i);
+
     FILE *f = fopen(argv[1], "wb");
     if (!f)
         return 1;
