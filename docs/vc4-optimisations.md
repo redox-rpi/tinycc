@@ -125,8 +125,13 @@ What the ablation shows:
 
 Status: points 1–4 are in [PR #21](https://github.com/redox-rpi/tinycc/pull/21)
 (waiting for review; measured there: B4 1.55× → 1.03×, B3s 1.83× → 1.14×,
-B1 1.41× → 1.33× of GCC `-Os` in resim). It needs
+B1 1.41× → 1.33× of GCC `-Os` in resim; Pi Test 502: `fl` 1.01×,
+`fb` 1.26–1.45× of GCC). It needs
 [resim#2](https://github.com/redox-rpi/resim/pull/2) (`signext`).
+Point 5 and the leaf part of point 6 (parameters in r0–r3, no saves)
+are in [PR #22](https://github.com/redox-rpi/tinycc/pull/22), stacked on
+#21: B3s 1.14× → 1.04×, B4 1.03× → 1.02×, B1 1.33× → 1.26×; on the Pi
+as pi-tests Test 503. Draft.
 
 The estimated gain is for vc4-tcc today, from the counts above. Effort
 assumes TinyCC's one-pass design: patterns on the instructions just
