@@ -624,8 +624,11 @@ ST_FUNC void load(int r, SValue *sv)
 
     if ((v == VT_LOCAL || v == VT_LLOCAL) && vc4_slot_reg(fc) >= 0) {
         int rr = vc4_slot_reg(fc), sz, sh;
-        if (v == VT_LLOCAL || !(fr & VT_LVAL))
+        if (v == VT_LLOCAL || !(fr & VT_LVAL)) {
+            if (nocode_wanted)   /* as in store() */
+                return;
             tcc_error("VC4: internal: register variable used as memory");
+        }
         /* a cast lvalue such as (uint8_t)v reads the low bytes
            (little-endian): move, then zero or sign extend */
         sz = vc4_accsz(&sv->type, 0);
