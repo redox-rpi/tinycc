@@ -123,6 +123,11 @@ What the ablation shows:
 
 ## Candidates for vc4-tcc, ranked
 
+Status: points 1–4 are in [PR #21](https://github.com/redox-rpi/tinycc/pull/21)
+(waiting for review; measured there: B4 1.55× → 1.03×, B3s 1.83× → 1.14×,
+B1 1.41× → 1.33× of GCC `-Os` in resim). It needs
+[resim#2](https://github.com/redox-rpi/resim/pull/2) (`signext`).
+
 The estimated gain is for vc4-tcc today, from the counts above. Effort
 assumes TinyCC's one-pass design: patterns on the instructions just
 emitted are small; anything that needs to see a whole loop or function
