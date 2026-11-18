@@ -63,6 +63,10 @@ for expressions; r6 is a scratch register; r7 is the frame pointer.
 **Frame:** the prologue is `stm r6-r7,lr,(--sp)`, then `add r7,sp,-64`,
 then `add sp,#-size`. r7 points 64 bytes below the top of the frame, so
 the first 16 locals are in reach of the short 16-bit `ld/st rd,(r7+0..60)`.
+A function that never reads r7 has no frame (#16): the two `add`s are
+dropped at the end of the function and the epilogue does not restore sp.
+A leaf function with nothing to save has no `stm`/`ldm` at all and ends
+in `rts`.
 
 **Optimisations** (all inside the backend unless noted):
 - *Register variables.* Before a function is compiled, `tccgen.c` scans
@@ -73,6 +77,15 @@ the first 16 locals are in reach of the short 16-bit `ld/st rd,(r7+0..60)`.
   widened in place to `stm r6-r(7+n),lr` (and the epilogue's `ldm` too),
   so functions without register variables cost nothing extra. Not used in
   variadic functions, functions with stack arguments or with inline asm.
+  A parameter used once counts as used twice: it arrives in a register,
+  and moving it to r8.. costs no more than storing it (#16).
+- *Leaf functions* (#16): the same scan notes whether the body may call
+  (a name, `)` or `]` before `(`, an initializer, struct/union, `long
+  long` or floating point types, also through pointers and typedefs). In
+  a leaf the first four parameters the scan picked stay in r0–r3, which
+  are then not allocated for expressions (r4, r5 remain). A call that
+  still comes in such a function stops the compile with an internal
+  error, never wrong code.
 - *Loop rotation* (`tccgen.c`): the loop condition is compiled after the
   body as "jump back if true", so one jump per iteration instead of three.
 - *Fused loop branch:* `add rd,#i; cmp rd,rs; b<cc> top` at the end of a
@@ -99,7 +112,8 @@ the first 16 locals are in reach of the short 16-bit `ld/st rd,(r7+0..60)`.
   jump is first 32-bit; relaxation only shrinks code, sites that no
   longer reach go back to the longer form until nothing changes. Skipped
   for functions with inline asm, debug or coverage code or labels whose
-  address is taken. The loop-end test also uses the `#imm` form.
+  address is taken. The loop-end test also uses the `#imm` form. An
+  unconditional jump to the next instruction is dropped.
 - *Idioms* (#16): `-x` is `neg`, `-(x & 1)` is `signext rd,ra,0`,
   `(x << c) >> c` is `bmask`/`signext`, signed byte loads and casts are
   `ldb` + `signext r,7`.
@@ -142,7 +156,8 @@ for that (fat-boot a8bcbe7).
 Kept small and, where they change behaviour, limited to VC4 or behind a
 define (list in `README-vc4.md`):
 - `tccgen.c`: loop rotation (VC4, or any target with
-  `-DTCC_LOOP_ROTATE`); the register-variable scan and hooks (VC4 only);
+  `-DTCC_LOOP_ROTATE`); the register-variable scan, its leaf test and
+  hooks (VC4 only); `tcc.h`: `reg_classes` is not `const` for VC4;
   `__attribute__((section))` on a prototype also applies to the
   definition, as in GCC.
 - `tccasm.c`: `.irp`, `.incbin`; `.align N` means 2^N bytes for VC4.
