@@ -1044,7 +1044,7 @@ static int vc4_br_end(VC4Br *b)
 }
 static int vc4_br_len(VC4Br *b)
 {
-    return b->kind == BR_DEL ? 0
+    return b->kind == BR_DEL || b->st == 3 ? 0
          : b->kind == BR_B16 || (b->kind == BR_B32 && b->st == 1) ? 2 : 4;
 }
 
@@ -1128,10 +1128,16 @@ static void vc4_relax(void)
             goto reset;
     }
 
-    /* optimistic start */
+    /* optimistic start; st 3: an unconditional jump to the next
+       instruction is dropped */
     for (i = 0; i < nb_brs; i++) {
         VC4Br *b = &brs[i];
         b->st = 0;
+        if ((b->kind == BR_B32 || b->kind == BR_B16) && b->cc == VC4_AL
+            && b->tgt == vc4_br_end(b)) {
+            b->st = 3;
+            continue;
+        }
         if (b->kind != BR_B32)
             continue;
         b->st = 1;
@@ -1162,7 +1168,8 @@ static void vc4_relax(void)
             VC4Br *b = &brs[i];
             int at = vc4_relax_map(vc4_br_start(b), sav);
             int off = (vc4_relax_map(b->tgt, sav) - at) >> 1;
-            int ok = b->kind == BR_B16 || (b->kind == BR_B32 && b->st == 1)
+            int ok = b->st == 3 ? 1
+                   : b->kind == BR_B16 || (b->kind == BR_B32 && b->st == 1)
                          ? off >= -64 && off < 64
                    : b->kind == BR_CIMM || (b->st == 2 && b->rb < 0)
                          ? off >= -128 && off < 128
@@ -1208,7 +1215,7 @@ static void vc4_relax(void)
             ind += s - src;
             at = ind;
             off = vc4_relax_map(b->tgt, sav) - at;
-            switch (b->kind) {
+            switch (b->st == 3 ? BR_DEL : b->kind) {
             case BR_B32:
                 if (b->st == 2 && b->rb >= 0)
                     vc4_bcmp_reg(b->cc, b->ra, b->rb, off);
