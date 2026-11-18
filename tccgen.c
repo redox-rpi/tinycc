@@ -6120,6 +6120,9 @@ ST_FUNC void unary(void)
             mk_pointer(&s->type);
             s->type.t |= VT_STATIC;
         }
+#ifdef TCC_TARGET_VC4
+        vc4_note_label_addr();
+#endif
         vpushsym(&s->type, s);
         next();
         break;
@@ -8900,7 +8903,7 @@ static void sym_push_params(Sym *ref)
 ST_DATA int regvar_ids[REGVAR_MAX];
 ST_DATA int nb_regvar_ids;
 
-static TokenString *regvar_scan_body(void)
+static TokenString *regvar_scan_body(Sym *func)
 {
     TokenString *body = tok_str_alloc();
     struct { int id, w, out; } *v = NULL;
@@ -8979,6 +8982,12 @@ static TokenString *regvar_scan_body(void)
             break;
     }
     tok_str_add(body, TOK_EOF);
+    /* parameters used once count as twice: they arrive in a register,
+       and moving them to r8.. costs no more than storing them */
+    for (s = func->type.ref->next; s; s = s->next)
+        for (i = 0; i < nv; i++)
+            if (v[i].id == (s->v & ~SYM_FIELD) && v[i].w == 1)
+                v[i].w = 2;
     /* the REGVAR_MAX heaviest, used at least twice; none with inline asm,
        which may use r8-r15 */
     while (!has_asm && nb_regvar_ids < REGVAR_MAX) {
@@ -9037,7 +9046,7 @@ static void gen_function(Sym *sym)
     nb_temp_local_vars = 0;
 
 #ifdef TCC_TARGET_VC4
-    TokenString *body = regvar_scan_body();
+    TokenString *body = regvar_scan_body(sym);
     unget_tok(0);
     begin_macro(body, 1);
     next();

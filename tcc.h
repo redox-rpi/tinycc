@@ -1758,6 +1758,7 @@ ST_FUNC SValue *vc4_vstack(void);
 ST_FUNC void vc4_inc_flush(void);
 ST_FUNC void vc4_vpop(void);
 ST_FUNC void vc4_note_asm(void);
+ST_FUNC void vc4_note_label_addr(void);
 #endif
 
 /* ------------ c67-gen.c ------------ */
