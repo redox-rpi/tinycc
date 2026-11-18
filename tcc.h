@@ -1639,7 +1639,7 @@ ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr,
 /* ------------ xxx-gen.c ------------ */
 ST_DATA const char * const target_machine_defs;
 #ifdef TCC_TARGET_VC4
-ST_DATA int reg_classes[NB_REGS];   /* vc4-gen.c: leaf functions keep parameters in r0-r2 */
+ST_DATA int reg_classes[NB_REGS];   /* vc4-gen.c: leaf functions keep parameters in r0-r3 */
 #else
 ST_DATA const int reg_classes[NB_REGS];
 #endif
