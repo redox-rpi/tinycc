@@ -1755,6 +1755,9 @@ ST_FUNC void vc4_local_var(Sym *sym);
 ST_FUNC int vc4_inc_regvar(int post, int d);
 ST_FUNC int vc4_loop_branch(int c);
 ST_FUNC SValue *vc4_vstack(void);
+ST_FUNC void vc4_inc_flush(void);
+ST_FUNC void vc4_vpop(void);
+ST_FUNC void vc4_note_asm(void);
 #endif
 
 /* ------------ c67-gen.c ------------ */
