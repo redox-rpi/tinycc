@@ -1,7 +1,8 @@
 # TinyCC VC4: decisions and licence
 
 Why this fork exists, what was decided and what we learned on the way.
-The parts of the backend: [vc4-components.md](vc4-components.md). Build
+The parts of the backend: [vc4-components.md](vc4-components.md). What each
+further optimisation would gain: [vc4-optimisations.md](vc4-optimisations.md). Build
 commands and numbers: [`README-vc4.md`](../README-vc4.md). Background and
 the alternatives that were considered (LLVM, a newer GCC): rpi-open-firmware
 [vpu-compiler.md](https://github.com/redox-rpi/rpi-open-firmware/blob/redox-rpi/docs/vpu-compiler.md).
