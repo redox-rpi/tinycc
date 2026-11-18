@@ -1638,7 +1638,11 @@ ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr,
 
 /* ------------ xxx-gen.c ------------ */
 ST_DATA const char * const target_machine_defs;
+#ifdef TCC_TARGET_VC4
+ST_DATA int reg_classes[NB_REGS];   /* vc4-gen.c: leaf functions keep parameters in r0-r2 */
+#else
 ST_DATA const int reg_classes[NB_REGS];
+#endif
 
 ST_FUNC void gsym_addr(int t, int a);
 ST_FUNC void gsym(int t);
@@ -1751,6 +1755,7 @@ ST_DATA int vc4_label_ind;
 #define REGVAR_MAX 8
 ST_DATA int regvar_ids[REGVAR_MAX];   /* tccgen.c: names wanted in registers */
 ST_DATA int nb_regvar_ids;
+ST_DATA int regvar_leaf;   /* tccgen.c: the body has no call (as far as the scan sees) */
 ST_FUNC void vc4_local_var(Sym *sym);
 ST_FUNC int vc4_inc_regvar(int post, int d);
 ST_FUNC int vc4_loop_branch(int c);
