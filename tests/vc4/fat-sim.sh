@@ -22,7 +22,8 @@ prefix=$2
 emul=$3
 newlib=$(dirname "$(dirname "$(command -v "${prefix}gcc")")")/vc4-elf/include
 # KEEP=dir keeps the programs, images and simulator output there
-# BENCH=1 also prints how many instructions fat.c from GCC and from TCC
+# BENCH=1 also prints how many instructions fat.c from GCC (-Os as the
+#   firmware, and -O2 as the speed baseline of tinycc #13) and from TCC
 #   needs to load the files from the FAT32 image (no checksums; needs a
 #   vc4emul that prints "insns: N" when VC4EMUL_COUNT is set)
 if [ -n "${KEEP:-}" ]; then t=$KEEP; mkdir -p "$t"; rm -rf "${t:?}"/*
@@ -97,7 +98,9 @@ done
 if [ -n "${BENCH:-}" ]; then
 	"${prefix}gcc" -O1 -fno-jump-tables -DFAT_SIM_BENCH "${inc[@]}" \
 		-c "$here/fat-sim-main.c" -o "$t/main-bench.o"
-	for c in gcc tcc; do
+	"${prefix}gcc" -std=c11 -O2 -ffreestanding -fno-builtin "${inc[@]}" \
+		-fno-jump-tables -c "$fw/bootcode/fat.c" -o "$t/fat-gcc-O2.o"
+	for c in gcc gcc-O2 tcc; do
 		"${prefix}gcc" -T vc4-sim.ld "$t/main-bench.o" "$t/rt.o" "$t/fat-$c.o" -o "$t/bench-$c.elf"
 		"${prefix}objcopy" -O binary "$t/bench-$c.elf" "$t/mem.bin"
 		truncate -s $((16 << 20)) "$t/mem.bin"

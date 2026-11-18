@@ -3,6 +3,9 @@
 # LGPL-2.1-or-later): compile C files of the firmware's bootcode/ with
 # vc4-tcc and with vc4-elf-gcc -Os, compare the sizes, and link the TCC
 # objects into the real bootcode build (MONITOR=1) in place of GCC's.
+# A second GCC build with -O2 in place of -Os is the speed baseline
+# (tinycc #13, benchmark B1 size column; its bootcode.bin is the GCC -O2
+# image for B2/B3 on the Pi).
 #
 #   tests/vc4/bootcode-build.sh <rpi-open-firmware checkout> [vc4-prefix]
 #
@@ -13,7 +16,9 @@
 #                     every file through TCC and fat-boot a8bcbe7 or later,
 #                     whose code uses __start_X/__stop_X symbols); the checks
 #                     of linker.ld (ASSERT) are done on the -Wl,-Map output
-#   KEEP=dir          keep bootcode-tcc.{elf,bin} and the TCC objects there
+#   KEEP=dir          keep bootcode-tcc.{elf,bin}, the TCC objects and the
+#                     GCC images bootcode-gcc-Os.bin, bootcode-gcc-O2.bin there
+#   GCC_O2=0          skip the GCC -O2 build
 #
 # The checkout needs bootcode/ (branch fat-boot or later) and the upstream
 # headers at the top (hardware.h, vc4_include/); bootcode's Makefile looks
@@ -40,12 +45,24 @@ defs=()
 eval "set -- $(make -pn MONITOR=1 CROSS_COMPILE="$prefix" 2>/dev/null | sed -n 's/^CFLAGS := //p')"
 for a; do case $a in -DBUILD_ID=*) ;; -D*) defs+=("$a") ;; esac; done
 [ ${#defs[@]} -gt 0 ] || { echo "no -D options in bootcode/Makefile's CFLAGS (make -pn found no 'CFLAGS :=' line?)" >&2; exit 1; }
+# the same bootcode with -O2: a copy of bootcode/ with the Makefile's -Os
+# changed, built against this checkout (FW_DIR)
+o2=
+if [ "${GCC_O2:-1}" != 0 ]; then
+	o2=$out/o2
+	cp -r "$fw/bootcode" "$o2"
+	rm -rf "$o2/build"
+	sed -i 's/ -Os / -O2 /' "$o2/Makefile"
+	grep -q ' -O2 ' "$o2/Makefile" || { echo "bootcode/Makefile has no ' -Os ' to change" >&2; exit 1; }
+	make -s -C "$o2" MONITOR=1 CROSS_COMPILE="$prefix" FW_DIR="$fw" \
+		BUILD_ID="$(git -C "$fw" describe --always --dirty 2>/dev/null || echo unknown)-O2" >/dev/null
+fi
 files=${TCC_FILES:-$(cd build && ls *.c.o *.S.o | sed 's/\.c\.o$//; s/\.o$//')}
 
 text() { "${prefix}size" "$1" | awk 'NR==2 { print $1 }'; }
 echo "text sizes of the MONITOR=1 build (the release build has no monitor)"
-printf '%-10s %8s %8s %6s\n' file "GCC -Os" TCC factor
-gt=0 tt=0 objs=$(cd build && ls *.c.o *.S.o)
+printf '%-10s %8s %8s %6s %8s %6s\n' file "GCC -Os" TCC factor "GCC -O2" factor
+gt=0 tt=0 g2t=0 objs=$(cd build && ls *.c.o *.S.o)
 for f in $files; do
 	case $f in
 	*.S)	src=$f obj=build/$f.o
@@ -56,13 +73,15 @@ for f in $files; do
 			-I"$newlib" -I. -I.. -I../vc4_include "${defs[@]}" \
 			-DBUILD_ID='"tcc"' -c "$src" -o "$out/$f-tcc.o" ;;
 	esac
-	g=$(text "$obj") t=$(text "$out/$f-tcc.o")
-	gt=$((gt + g)) tt=$((tt + t))
-	awk -v f="$f" -v g="$g" -v t="$t" \
-		'BEGIN { printf "%-10s %8d %8d %6.2f\n", f, g, t, t / g }'
+	g=$(text "$obj") t=$(text "$out/$f-tcc.o") g2=0
+	[ -z "$o2" ] || g2=$(text "$o2/$obj")
+	gt=$((gt + g)) tt=$((tt + t)) g2t=$((g2t + g2))
+	awk -v f="$f" -v g="$g" -v t="$t" -v g2="$g2" \
+		'BEGIN { printf "%-10s %8d %8d %6.2f %8d %6.2f\n", f, g, t, t / g, g2, g2 ? t / g2 : 0 }'
 	objs=$(echo "$objs" | grep -vx "${obj#build/}" || true)
 done
-awk -v g="$gt" -v t="$tt" 'BEGIN { printf "%-10s %8d %8d %6.2f\n", "total", g, t, t / g }'
+awk -v g="$gt" -v t="$tt" -v g2="$g2t" \
+	'BEGIN { printf "%-10s %8d %8d %6.2f %8d %6.2f\n", "total", g, t, t / g, g2, g2 ? t / g2 : 0 }'
 
 # start.S first: its code is the image's first bytes
 tccobjs=$(for f in $files; do echo "$out/$f-tcc.o"; done | sort -t/ -k99 |
@@ -92,6 +111,12 @@ else
 fi
 printf 'bootcode.bin (MONITOR=1): GCC %d bytes, with TCC objects %d bytes\n' \
 	"$(stat -c %s build/bootcode.bin)" "$(stat -c %s "$out/bootcode-tcc.bin")"
+cp build/bootcode.bin "$out/bootcode-gcc-Os.bin"
+if [ -n "$o2" ]; then
+	cp "$o2/build/bootcode.bin" "$out/bootcode-gcc-O2.bin"
+	printf 'bootcode.bin (MONITOR=1) with GCC -O2: %d bytes\n' "$(stat -c %s "$out/bootcode-gcc-O2.bin")"
+	rm -rf "$o2"
+fi
 if [ -n "${KEEP:-}" ]; then
 	mkdir -p "$KEEP"
 	cp "$out"/* "$KEEP/"
