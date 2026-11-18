@@ -57,7 +57,7 @@ ST_DATA const char * const target_machine_defs =
     "__VC4__\0"
     ;
 
-ST_DATA const int reg_classes[NB_REGS] = {
+ST_DATA int reg_classes[NB_REGS] = {
     RC_INT | RC_R(0),
     RC_INT | RC_R(1),
     RC_INT | RC_R(2),
@@ -83,10 +83,22 @@ static struct { int pos, end, ra, rb, imm; } lc = { -1, -1 };
 
 /* branch sites of the current function, for vc4_relax(); a B32 site
    with cmp >= 0 directly follows that compare */
-enum { BR_B32 = 1, BR_B16, BR_CREG, BR_CIMM };
+/* BR_DEL is no branch: imm bytes at pos that are dropped (the frame
+   set-up of a function that does not use its frame) */
+enum { BR_B32 = 1, BR_B16, BR_CREG, BR_CIMM, BR_DEL };
 typedef struct { int pos, kind, cmp, ra, rb, imm, cc, tgt, st; } VC4Br;
 static VC4Br *brs;
 static int nb_brs, max_brs, fn_start, fn_reloc, fn_asm;
+static int fp_used;   /* r7 (the frame) read since the prologue */
+static int r6_used;   /* r6 (scratch, callee-saved) written */
+
+/* Leaf functions (no call, see regvar_leaf): the first VC4_LEAF_ARGS
+   parameters that the scan picked stay in their argument register, which
+   is then not allocated (r4 and r5 remain); with no other register variable
+   and no frame there is nothing to save, and the function is its body
+   and "rts", as GCC's. */
+#define VC4_LEAF_ARGS 4
+static int fn_leaf, argrv_off[VC4_LEAF_ARGS], argrv_reg[VC4_LEAF_ARGS], nb_argrv;
 
 /* a pending p++ on the pointer register variable rv (vc4_inc_regvar) */
 static struct { int rv, d, on; } pinc;
@@ -113,10 +125,10 @@ static void vc4_br_add(int pos, int kind, int fuse)
    4-byte scalars, and none in variadic functions or functions with stack arguments. */
 static int regvar_off[REGVAR_MAX], nb_regvar, regpush_ind, regvar_off_func;
 
-static int vc4_regvar_wanted(int v, CType *type)
+static int vc4_regvar_name(int v, CType *type)
 {
     int i, bt = type->t & VT_BTYPE;
-    if (func_var || regvar_off_func || nb_regvar >= REGVAR_MAX)
+    if (func_var || regvar_off_func)
         return 0;
     if ((type->t & (VT_VOLATILE | VT_ARRAY | VT_VLA))
         || (bt != VT_INT && bt != VT_PTR))
@@ -128,6 +140,11 @@ static int vc4_regvar_wanted(int v, CType *type)
     return 0;
 }
 
+static int vc4_regvar_wanted(int v, CType *type)
+{
+    return nb_regvar < REGVAR_MAX && vc4_regvar_name(v, type);
+}
+
 ST_FUNC void vc4_local_var(Sym *sym)
 {
     if (vc4_regvar_wanted(sym->v, &sym->type))
@@ -137,6 +154,9 @@ ST_FUNC void vc4_local_var(Sym *sym)
 static int vc4_slot_reg(int fc)
 {
     int i;
+    for (i = 0; i < nb_argrv; i++)
+        if (argrv_off[i] == fc)
+            return argrv_reg[i];
     for (i = 0; i < nb_regvar; i++)
         if (regvar_off[i] == fc)
             return 8 + i;
@@ -200,6 +220,8 @@ static void vc4_mov_imm(int rd, int32_t v)
 /* rd = ra + v */
 static void vc4_add_imm(int rd, int ra, int32_t v)
 {
+    if (ra == FP)
+        fp_used = 1;
     if (rd == ra) {
         if (v == 0)
             return;
@@ -222,6 +244,8 @@ static void vc4_add_imm(int rd, int ra, int32_t v)
 
 static void vc4_ldst(int sz, int rd, int base, int32_t off)
 {
+    if (base == FP)
+        fp_used = 1;
     if (off == 0 && VC4_FAST(rd) && VC4_FAST(base))
         vc4_ldst16(sz, rd, base);
     else if ((sz == VC4_LD || sz == VC4_ST) && VC4_FAST(rd) && VC4_FAST(base)
@@ -553,6 +577,15 @@ ST_FUNC void vc4_note_asm(void)
 {
     vc4_inc_flush_sv(NULL);
     fn_asm = 1;
+    fp_used = r6_used = 1;   /* the asm may use r6, r7 */
+}
+
+/* &&label: the label's address goes into data or code through a symbol
+   that tccgen.c defines only after gfunc_epilog(), so vc4_relax() cannot
+   see it; the function keeps its code as emitted */
+ST_FUNC void vc4_note_label_addr(void)
+{
+    fn_asm = 1;
 }
 
 /* access size in bytes of a load/store size code */
@@ -591,8 +624,11 @@ ST_FUNC void load(int r, SValue *sv)
 
     if ((v == VT_LOCAL || v == VT_LLOCAL) && vc4_slot_reg(fc) >= 0) {
         int rr = vc4_slot_reg(fc), sz, sh;
-        if (v == VT_LLOCAL || !(fr & VT_LVAL))
+        if (v == VT_LLOCAL || !(fr & VT_LVAL)) {
+            if (nocode_wanted)   /* as in store() */
+                return;
             tcc_error("VC4: internal: register variable used as memory");
+        }
         /* a cast lvalue such as (uint8_t)v reads the low bytes
            (little-endian): move, then zero or sign extend */
         sz = vc4_accsz(&sv->type, 0);
@@ -724,8 +760,13 @@ ST_FUNC void store(int r, SValue *sv)
     }
     if ((fr == VT_LOCAL || fr == VT_LLOCAL) && vc4_slot_reg(fc) >= 0) {
         int rv = vc4_slot_reg(fc);
-        if (fr == VT_LLOCAL || sz != VC4_ST)
+        if (fr == VT_LLOCAL || sz != VC4_ST) {
+            /* a compound literal in typeof or sizeof gets size 0 and may
+               sit on a register variable's slot; no code is made */
+            if (nocode_wanted)
+                return;
             tcc_error("VC4: internal: register variable used as memory");
+        }
         if (sv == vtop - 1 && vtop->r == r && la_retarget(r, rv)) {
             /* the stored value is now the variable itself */
             vtop->r = VT_LOCAL | VT_LVAL;
@@ -743,6 +784,7 @@ ST_FUNC void store(int r, SValue *sv)
     } else if (fr == VT_LLOCAL) {
         vc4_ldst(VC4_LD, TREG_R6, FP, fc + VC4_FP_BIAS);
         base = TREG_R6;
+        r6_used = 1;
     } else if (fr == VT_CONST) {
         if (sv->r & VT_SYM) {
             greloca(cur_text_section, sv->sym, ind, R_VC4_PCREL27, fc);
@@ -751,6 +793,7 @@ ST_FUNC void store(int r, SValue *sv)
         }
         vc4_mov_imm(TREG_R6, fc);
         base = TREG_R6;
+        r6_used = 1;
     } else if (fr < VT_CONST) {
         base = fr;
     } else {
@@ -795,6 +838,8 @@ ST_FUNC void gfunc_call(int nb_args)
     int i, nreg = nb_args < 6 ? nb_args : 6;
     int stack = (nb_args - nreg) * 4;
 
+    if (fn_leaf)
+        tcc_error("VC4: internal: a call in %s, taken as a leaf function", funcname);
     vc4_inc_flush_sv(NULL);
     for (i = 0; i < nb_args; i++)
         vc4_check_arg_type(&vtop[1 + i - nb_args].type);
@@ -855,6 +900,8 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
     loc = 0;
     func_vc = 0;
     nb_regvar = 0;
+    for (i = 0; i < 6; i++)   /* after an error in the last function */
+        reg_classes[i] |= RC_INT;
     fn_start = ind;
     nb_brs = 0;
     fn_asm = 0;
@@ -877,6 +924,7 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
         vc4_push_r6_r7_lr();
     }
     vc4_add_imm(FP, VC4_SP, -VC4_FP_BIAS);
+    fp_used = 0;
     func_sub_sp_offset = ind;
     vc4_alu32i16(VC4_ADD, VC4_SP, 0); /* patched by gfunc_epilog */
     addr = func_regsave ? 36 : 12;
@@ -888,6 +936,12 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
         ;
     regvar_off_func = i > 6;
     sym = func_type->ref;
+    i = func_vt.t & VT_BTYPE;
+    fn_leaf = regvar_leaf && !func_regsave && !regvar_off_func
+        && i != VT_STRUCT && i != VT_LLONG && !is_float(i)
+        && !tcc_state->do_bounds_check && !tcc_state->test_coverage;
+    nb_argrv = 0;
+    r6_used = 0;
 
     if ((func_vt.t & VT_BTYPE) == VT_STRUCT) {
         if (func_regsave) {
@@ -905,7 +959,14 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
             gfunc_set_param(sym, 12 + 4 * n++, 0);
         } else if (n < 6) {
             loc -= 4;
-            if (vc4_regvar_wanted(sym->v, &sym->type)) {
+            if (fn_leaf && n < VC4_LEAF_ARGS
+                && vc4_regvar_name(sym->v, &sym->type)) {
+                /* stays in rn, which is no longer allocated */
+                argrv_off[nb_argrv] = loc;
+                argrv_reg[nb_argrv++] = n;
+                reg_classes[n] &= ~RC_INT;
+                n++;
+            } else if (vc4_regvar_wanted(sym->v, &sym->type)) {
                 regvar_off[nb_regvar] = loc;
                 vc4_mov_reg(8 + nb_regvar++, n++);
             } else {
@@ -980,10 +1041,14 @@ static int vc4_sext(unsigned v, int bits)
 
 /* the edited region of a site in state st: [start, end), new length */
 static int vc4_br_start(VC4Br *b) { return b->st == 2 ? b->cmp : b->pos; }
-static int vc4_br_end(VC4Br *b) { return b->pos + (b->kind == BR_B16 ? 2 : 4); }
+static int vc4_br_end(VC4Br *b)
+{
+    return b->pos + (b->kind == BR_DEL ? b->imm : b->kind == BR_B16 ? 2 : 4);
+}
 static int vc4_br_len(VC4Br *b)
 {
-    return b->kind == BR_B16 || (b->kind == BR_B32 && b->st == 1) ? 2 : 4;
+    return b->kind == BR_DEL || b->st == 3 ? 0
+         : b->kind == BR_B16 || (b->kind == BR_B32 && b->st == 1) ? 2 : 4;
 }
 
 /* new address of the old address x; sav[i] = bytes saved by sites < i */
@@ -1031,6 +1096,10 @@ static void vc4_relax(void)
         unsigned h0 = read16le(d + b->pos), h1;
         if (vc4_br_end(b) > end)
             goto reset;
+        if (b->kind == BR_DEL) {
+            b->tgt = -1;
+            continue;
+        }
         h1 = b->kind == BR_B16 ? 0 : read16le(d + b->pos + 2);
         switch (b->kind) {
         case BR_B32:
@@ -1062,10 +1131,16 @@ static void vc4_relax(void)
             goto reset;
     }
 
-    /* optimistic start */
+    /* optimistic start; st 3: an unconditional jump to the next
+       instruction is dropped */
     for (i = 0; i < nb_brs; i++) {
         VC4Br *b = &brs[i];
         b->st = 0;
+        if ((b->kind == BR_B32 || b->kind == BR_B16) && b->cc == VC4_AL
+            && b->tgt == vc4_br_end(b)) {
+            b->st = 3;
+            continue;
+        }
         if (b->kind != BR_B32)
             continue;
         b->st = 1;
@@ -1096,7 +1171,8 @@ static void vc4_relax(void)
             VC4Br *b = &brs[i];
             int at = vc4_relax_map(vc4_br_start(b), sav);
             int off = (vc4_relax_map(b->tgt, sav) - at) >> 1;
-            int ok = b->kind == BR_B16 || (b->kind == BR_B32 && b->st == 1)
+            int ok = b->st == 3 ? 1
+                   : b->kind == BR_B16 || (b->kind == BR_B32 && b->st == 1)
                          ? off >= -64 && off < 64
                    : b->kind == BR_CIMM || (b->st == 2 && b->rb < 0)
                          ? off >= -128 && off < 128
@@ -1142,7 +1218,7 @@ static void vc4_relax(void)
             ind += s - src;
             at = ind;
             off = vc4_relax_map(b->tgt, sav) - at;
-            switch (b->kind) {
+            switch (b->st == 3 ? BR_DEL : b->kind) {
             case BR_B32:
                 if (b->st == 2 && b->rb >= 0)
                     vc4_bcmp_reg(b->cc, b->ra, b->rb, off);
@@ -1168,6 +1244,8 @@ static void vc4_relax(void)
                 VC4_EMIT16(h1);
                 break;
             }
+            case BR_DEL:
+                break;
             }
             src = vc4_br_end(b);
         }
@@ -1194,11 +1272,28 @@ reset:
 
 ST_FUNC void gfunc_epilog(void)
 {
-    int v = (-loc + 3) & -4, saved_ind;
+    int v = (-loc + 3) & -4, saved_ind, frame, del, i;
 
     vc4_inc_flush_sv(NULL);
-    vc4_add_imm(VC4_SP, FP, VC4_FP_BIAS);
-    if (func_regsave) {
+    /* a function that never reads r7 has no frame: sp stays where the
+       push left it, and vc4_relax() drops "add r7,sp,..; add sp,.." from
+       the prologue (if it cannot, they stay as "add sp,0" and an r7 that
+       nobody reads) */
+    frame = fp_used || func_regsave;
+    if (frame)
+        vc4_add_imm(VC4_SP, FP, VC4_FP_BIAS);
+    else
+        v = 0;
+    for (i = 0; i < nb_argrv; i++)
+        reg_classes[argrv_reg[i]] |= RC_INT;
+    nb_argrv = 0;
+    del = regpush_ind + 2;
+    if (fn_leaf && !frame && !nb_regvar && !r6_used && !nocode_wanted) {
+        /* nothing to save: the push becomes a nop (dropped below) */
+        write16le(cur_text_section->data + regpush_ind, 0x0001);
+        vc4_rts();
+        del = regpush_ind;
+    } else if (func_regsave) {
         vc4_ldst(VC4_LD, TREG_R6, VC4_SP, 0);
         vc4_ldst(VC4_LD, VC4_LR, VC4_SP, 8);
         vc4_ldst(VC4_LD, FP, VC4_SP, 4);
@@ -1218,6 +1313,12 @@ ST_FUNC void gfunc_epilog(void)
         tcc_error("VC4: stack frame of %d bytes, more than 32 KB", v);
     vc4_alu32i16(VC4_ADD, VC4_SP, -v);
     ind = saved_ind;
+    if (!frame && !nocode_wanted) {
+        vc4_br_add(del, BR_DEL, 0);
+        if (nb_brs && brs[nb_brs - 1].pos == del)
+            brs[nb_brs - 1].imm = func_sub_sp_offset + 4 - del;
+    }
+    fn_leaf = 0;
     vc4_relax();
 }
 
@@ -1256,6 +1357,7 @@ ST_FUNC void gen_opi(int op)
         fr = vtop[0].r;
         vtop--;
         if (op == '%' || op == TOK_UMOD) {
+            r6_used = 1;
             vc4_div(op == TOK_UMOD, TREG_R6, r, fr);
             vc4_alu16(VC4_MUL, TREG_R6, fr);
             vc4_alu16(VC4_SUB, r, TREG_R6);
@@ -1274,11 +1376,11 @@ ST_FUNC void gen_opi(int op)
     if (vop == VC4_SUB && !vc4_const_op()
         && (vtop[-1].r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
         && vtop[-1].c.i == 0) {
-        int rs = vc4_regvar_of(vtop), pos;
+        int rs = vc4_regvar_of(vtop), pos, tmp = rs < 0;
         if (rs < 0)
             rs = gv(RC_INT);
-        r = rs < 8 ? rs : get_reg(RC_INT);
-        if (rs < 8 && la.end == ind && la.rd == rs && vc4_label_ind != ind
+        r = tmp ? rs : get_reg(RC_INT);
+        if (tmp && la.end == ind && la.rd == rs && vc4_label_ind != ind
             && la.kind == LA_ALUI && la.c == 1
             && (la.op == VC4_AND || la.op == VC4_BMASK)) {
             int a = la.a;
