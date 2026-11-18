@@ -89,8 +89,12 @@ About the VPU and its toolchain:
 About the simulator:
 - resim's `asr` was wrong for negative values and for a shift by 0, and
   `switch`, `bitflip` and `abs` were missing; fixed in redox-rpi/resim.
+- resim's `signext rd,ra,#n` sign-extended from bit n-1; the hardware
+  and GCC use bit n (`signext r,7` for `signed char`, `signext r,0` for
+  `-(x & 1)`). GCC's `crc32` was wrong in resim too. Fixed in
+  [resim#2](https://github.com/redox-rpi/resim/pull/2).
 - resim has no `ldsb`, so vc4-tcc loads signed bytes with `ldb` plus
-  `shl`/`asr`. GCC uses `ldsb`, so it is safe on the Pi; going back to it
+  `signext`. GCC uses `ldsb`, so it is safe on the Pi; going back to it
   saves 2 bytes per load once the simulator has it.
 - `stm r6-r7,lr` puts lr at the top in resim (the order is not
   documented). Normal functions only pair `stm` with `ldm`, so the order

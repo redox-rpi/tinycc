@@ -83,3 +83,7 @@ jobs:
       run: tests/vc4/fat-sim.sh rof "$P" "$E"
     - name: bootcode-build LINK=tcc
       run: LINK=tcc tests/vc4/bootcode-build.sh rof "$P"
+    - name: fb-sim (B3s)
+      run: |
+        git -C rof worktree add -q "$RUNNER_TEMP/rof-fb" "$FB_REV"
+        BENCH=1 tests/vc4/fb-sim.sh "$RUNNER_TEMP/rof-fb" "$P" "$E"
