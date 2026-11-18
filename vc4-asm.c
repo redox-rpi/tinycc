@@ -480,6 +480,7 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
     ASMOperand *op;
     int i, reg;
 
+    vc4_note_asm();        /* pending p++ done; no branch relaxation */
     vc4_label_ind = ind;   /* no store-to-load forwarding across asm */
     if (!is_output) {
         for (reg = VC4_ASM_SAVE_FIRST; reg <= VC4_ASM_SAVE_LAST; reg++)

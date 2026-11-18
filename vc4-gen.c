@@ -14,7 +14,10 @@
  */
 #ifdef TARGET_DEFS_ONLY
 
-#define NB_REGS 7
+/* r0-r5 are allocated; r6-r15 have no class: r8-r15 can stand on the
+   value stack as the old value of a pointer register variable after p++
+   (see vc4_inc_regvar) */
+#define NB_REGS 16
 
 #define RC_INT     (1 << 0)
 #define RC_FLOAT   (1 << 1)        /* no float registers (yet) */
@@ -62,6 +65,7 @@ ST_DATA const int reg_classes[NB_REGS] = {
     RC_INT | RC_R(4),
     RC_INT | RC_R(5),
     0, /* r6: scratch */
+    0, 0, 0, 0, 0, 0, 0, 0, 0 /* r7 (frame), r8-r15 (register variables) */
 };
 
 #define FP 7
@@ -72,6 +76,36 @@ static int func_sub_sp_offset;
    with no label in between becomes "mov rY,rX" (or nothing) */
 static int st_end = -1, st_reg, st_off;
 ST_DATA int vc4_label_ind = -1;   /* last code address that is a jump target */
+
+/* the last compare: "cmp ra,rb" (rb >= 0) or "cmp ra,#imm" (rb < 0), for
+   the fused compare-and-branch forms */
+static struct { int pos, end, ra, rb, imm; } lc = { -1, -1 };
+
+/* branch sites of the current function, for vc4_relax(); a B32 site
+   with cmp >= 0 directly follows that compare */
+enum { BR_B32 = 1, BR_B16, BR_CREG, BR_CIMM };
+typedef struct { int pos, kind, cmp, ra, rb, imm, cc, tgt, st; } VC4Br;
+static VC4Br *brs;
+static int nb_brs, max_brs, fn_start, fn_reloc, fn_asm;
+
+/* a pending p++ on the pointer register variable rv (vc4_inc_regvar) */
+static struct { int rv, d, on; } pinc;
+static void vc4_inc_flush_sv(SValue *extra);
+
+static void vc4_br_add(int pos, int kind, int fuse)
+{
+    VC4Br *b;
+    if (nocode_wanted)
+        return;
+    if (nb_brs == max_brs) {
+        max_brs = max_brs ? 2 * max_brs : 64;
+        brs = tcc_realloc(brs, max_brs * sizeof *brs);
+    }
+    b = &brs[nb_brs++];
+    b->pos = pos, b->kind = kind, b->cmp = -1, b->st = 0;
+    if (fuse && lc.end == pos && vc4_label_ind != pos)
+        b->cmp = lc.pos, b->ra = lc.ra, b->rb = lc.rb, b->imm = lc.imm;
+}
 
 /* Register variables: locals and parameters whose names tccgen.c's scan
    picked (regvar_ids) live in r8-r15 (callee-saved, saved with r6 and r7) instead of their
@@ -113,9 +147,13 @@ static int vc4_slot_reg(int fc)
 static int vc4_regvar_of(SValue *sv)
 {
     int bt = sv->type.t & VT_BTYPE;
+    int r;
     if (sv->r != (VT_LOCAL | VT_LVAL) || !(bt == VT_INT || bt == VT_PTR))
         return -1;
-    return vc4_slot_reg(sv->c.i);
+    r = vc4_slot_reg(sv->c.i);
+    if (r >= 0 && pinc.on && r == pinc.rv)
+        vc4_inc_flush_sv(NULL);   /* p is read: p++ first */
+    return r;
 }
 
 static void o16(unsigned h)
@@ -265,8 +303,13 @@ static int vc4_chain_next(int pos, int *cc)
 ST_FUNC void gsym_addr(int t, int a)
 {
     int cc, next;
-    if (t && a == ind)
+    if (t && a == ind) {
+        if (pinc.on) {
+            vc4_inc_flush_sv(NULL);   /* on the path falling into the label */
+            a = ind;
+        }
         vc4_label_ind = ind;
+    }
     while (t) {
         next = vc4_chain_next(t, &cc);
         if (!VC4_FITS_S(a - t, 24))
@@ -281,10 +324,12 @@ static int vc4_gjmp_cc(int cc, int t)
     int r;
     if (nocode_wanted)
         return t;
+    vc4_inc_flush_sv(NULL);
     r = ind;
     o16(0);
     o16(0);
     vc4_put_bcc32(r, cc, t);
+    vc4_br_add(r, BR_B32, cc != VC4_AL);
     return r;
 }
 
@@ -300,11 +345,16 @@ ST_FUNC int gjmp_cond(int op, int t)
 
 ST_FUNC void gjmp_addr(int a)
 {
-    int r = a - ind;
-    if (r >= -128 && r < 128)
+    int r, pos;
+    vc4_inc_flush_sv(NULL);
+    pos = ind, r = a - ind;
+    if (r >= -128 && r < 128) {
         vc4_bcc16(VC4_AL, r);
-    else
+        vc4_br_add(pos, BR_B16, 0);
+    } else {
         vc4_bcc32(VC4_AL, r);
+        vc4_br_add(pos, BR_B32, 0);
+    }
 }
 
 ST_FUNC int gjmp_append(int n, int t)
@@ -368,36 +418,148 @@ static int la_retarget(int r, int rv)
 /* ---- fused loop branches ----
    "add rd,#i; cmp rd,rs; b<cc> top" at the bottom of a loop becomes one
    "addcmpb<cc> rd,#i,rs,top" (i = 0: "b<cc> rd,rs,top"), as GCC does:
-   rd, rs in r0-r15, i in -8..7, top within 10 bits of halfwords. */
+   rd, rs in r0-r15, i in -8..7, top within 10 bits of halfwords. A
+   compare with a constant 0..63 gives "addcmpb<cc> rd,#i,#imm,top", top
+   within 8 bits of halfwords. */
 
-static struct { int pos, end, ra, rb; } lc = { -1, -1 };
 static struct { int pos, end, rd, d; } li = { -1, -1 };
 
 static void lc_set(int pos, int ra, int rb)
 {
-    lc.pos = pos, lc.end = ind, lc.ra = ra, lc.rb = rb;
+    lc.pos = pos, lc.end = ind, lc.ra = ra, lc.rb = rb, lc.imm = 0;
+}
+
+static void lc_set_imm(int pos, int ra, int imm)
+{
+    lc.pos = pos, lc.end = ind, lc.ra = ra, lc.rb = -1, lc.imm = imm;
 }
 
 ST_FUNC int vc4_loop_branch(int c)
 {
-    int start, off, imm = 0, rd = lc.ra, rs = lc.rb;
+    int start, off, imm = 0, rd, rs;
 
+    vc4_inc_flush_sv(NULL);
+    rd = lc.ra, rs = lc.rb;
     if (vtop->r != VT_CMP || vtop->jtrue || vtop->jfalse || nocode_wanted
         || vtop->cmp_op <= 1 || lc.end != ind || vc4_label_ind == ind
-        || rd > 15 || rs > 15)
+        || rd > 15 || rs > 15 || (rs < 0 && (lc.imm < 0 || lc.imm > 63)))
         return 0;
     start = lc.pos;
     if (li.end == lc.pos && li.rd == rd && vc4_label_ind != lc.pos)
         start = li.pos, imm = li.d;
     off = (c - start) >> 1;
-    if (off < -512 || off > 511)
+    if (rs >= 0 ? off < -512 || off > 511 : off < -128 || off > 127)
         return 0;
     ind = start;
-    VC4_EMIT16(0x8000 | vc4_cc(vtop->cmp_op) << 8 | (imm & 15) << 4 | rd);
-    VC4_EMIT16(0x4000 | rs << 10 | (off & 0x3ff));
+    if (rs >= 0)
+        vc4_addcmpb_reg(vc4_cc(vtop->cmp_op), rd, imm, rs, off * 2);
+    else
+        vc4_addcmpb_imm(vc4_cc(vtop->cmp_op), rd, imm, lc.imm, off * 2);
+    vc4_br_add(start, rs >= 0 ? BR_CREG : BR_CIMM, 0);
     lc.end = li.end = -1;
     vtop--;
     return 1;
+}
+
+/* ---- postponed p++ on pointer register variables ----
+   "*p++ = v" and "v = *p++" with p in a register become one
+   "st/ld v,(rp++)" (as GCC's auto-inc-dec). p++ leaves the old value on
+   the value stack as the register rp itself and the increment pending;
+   a load or store through it with the pointer's access size folds the
+   increment in. Anything else that could see p (a read or write of p, a
+   jump, a label, a call, the end of the statement or a dropped value)
+   first emits the increment, after copying the old value where the
+   value stack still holds it. */
+
+static int vc4_inc_refs(SValue *skip)
+{
+    SValue *p;
+    int n = 0;
+    for (p = vc4_vstack(); p <= vtop; p++)
+        if (p != skip && ((p->r & VT_VALMASK) == pinc.rv || p->r2 == pinc.rv))
+            n++;
+    return n;
+}
+
+static int vc4_on_vstack(SValue *sv)
+{
+    return sv >= vc4_vstack() && sv <= vtop;
+}
+
+static void vc4_inc_fix(SValue *p, int *r)
+{
+    if ((p->r & VT_VALMASK) != pinc.rv && p->r2 != pinc.rv)
+        return;
+    if (*r < 0) {
+        *r = get_reg(RC_INT);
+        vc4_mov_reg(*r, pinc.rv);
+    }
+    if ((p->r & VT_VALMASK) == pinc.rv)
+        p->r = (p->r & ~VT_VALMASK) | *r;
+    if (p->r2 == pinc.rv)
+        p->r2 = *r;
+}
+
+static void vc4_inc_flush_sv(SValue *extra)
+{
+    SValue *p;
+    int r = -1, cmp_len = 0;
+    unsigned char cmp[8];
+
+    if (!pinc.on || nocode_wanted)
+        return;
+    pinc.on = 0;
+    /* a compare right before: keep it next to its branch, in case the
+       increment touches the flags */
+    if (lc.end == ind && vc4_label_ind != ind && ind - lc.pos <= 8) {
+        cmp_len = ind - lc.pos;
+        memcpy(cmp, cur_text_section->data + lc.pos, cmp_len);
+        ind = lc.pos;
+    }
+    for (p = vc4_vstack(); p <= vtop; p++)
+        vc4_inc_fix(p, &r);
+    if (extra && !vc4_on_vstack(extra))
+        vc4_inc_fix(extra, &r);
+    li.pos = ind;
+    vc4_add_imm(pinc.rv, pinc.rv, pinc.d);
+    li.end = ind, li.rd = pinc.rv, li.d = pinc.d;
+    if (cmp_len) {
+        int i;
+        lc.pos = ind;
+        for (i = 0; i < cmp_len; i += 2)
+            o16(read16le(cmp + i));
+        lc.end = ind;
+        li.end = -1;
+    }
+    la.end = -1;
+}
+
+ST_FUNC void vc4_inc_flush(void)
+{
+    vc4_inc_flush_sv(NULL);
+}
+
+/* vpop: a dropped p++ (as in "p++;") still increments p */
+ST_FUNC void vc4_vpop(void)
+{
+    if (pinc.on && !nocode_wanted
+        && ((vtop->r & VT_VALMASK) == pinc.rv || vtop->r2 == pinc.rv)) {
+        vtop->r = vtop->r2 = VT_CONST;
+        vc4_inc_flush_sv(NULL);
+    }
+}
+
+ST_FUNC void vc4_note_asm(void)
+{
+    vc4_inc_flush_sv(NULL);
+    fn_asm = 1;
+}
+
+/* access size in bytes of a load/store size code */
+static int vc4_sz_bytes(int sz)
+{
+    return sz == VC4_LD || sz == VC4_ST ? 4
+         : sz == VC4_LDH || sz == VC4_STH || sz == VC4_LDSH ? 2 : 1;
 }
 
 /* ---- loads and stores ---- */
@@ -405,6 +567,27 @@ ST_FUNC int vc4_loop_branch(int c)
 ST_FUNC void load(int r, SValue *sv)
 {
     int fr = sv->r, v = fr & VT_VALMASK, fc = sv->c.i;
+
+    if (pinc.on && !nocode_wanted) {
+        if (v == pinc.rv && (fr & VT_LVAL) && vc4_on_vstack(sv)
+            && !vc4_inc_refs(sv)) {
+            int sz = vc4_accsz(&sv->type, 0);
+            if (vc4_sz_bytes(sz) == pinc.d) {
+                /* v = *p++ */
+                pinc.on = 0;
+                vc4_ldst_postinc(sz == VC4_LDSB ? VC4_LDB
+                                 : sz == VC4_LDSH ? VC4_LDH : sz, r, pinc.rv);
+                if (sz == VC4_LDSB || sz == VC4_LDSH)
+                    vc4_alu16i(VC4_SIGNEXT, r, sz == VC4_LDSB ? 7 : 15);
+                return;
+            }
+        }
+        if (((fr & VT_LVAL) && v == pinc.rv) || (v & ~1) == VT_JMP
+            || (v == VT_LOCAL && vc4_slot_reg(fc) == pinc.rv)) {
+            vc4_inc_flush_sv(sv);
+            fr = sv->r, v = fr & VT_VALMASK;
+        }
+    }
 
     if ((v == VT_LOCAL || v == VT_LLOCAL) && vc4_slot_reg(fc) >= 0) {
         int rr = vc4_slot_reg(fc), sz, sh;
@@ -419,12 +602,13 @@ ST_FUNC void load(int r, SValue *sv)
             if (sz == VC4_LD)
                 la_set(pos, r, LA_MOV, VC4_MOV, rr, 0, 0);
         }
-        sh = (sz == VC4_LDB || sz == VC4_LDSB) ? 24
+        sh = (sz == VC4_LDB || sz == VC4_LDSB) ? 8
            : (sz == VC4_LDH || sz == VC4_LDSH) ? 16 : 0;
         if (sh) {
-            vc4_alu16i(VC4_SHL, r, sh);
-            vc4_alu16i((sz == VC4_LDSB || sz == VC4_LDSH) ? VC4_ASR : VC4_LSR,
-                       r, sh);
+            if (sz == VC4_LDSB || sz == VC4_LDSH)
+                vc4_alu16i(VC4_SIGNEXT, r, sh - 1);
+            else
+                vc4_alu16i(VC4_BMASK, r, sh);
         }
         return;
     }
@@ -445,8 +629,7 @@ ST_FUNC void load(int r, SValue *sv)
                 greloca(cur_text_section, sv->sym, ind, R_VC4_PCREL27, fc);
                 if (sz == VC4_LDSB) {
                     vc4_ldst48(VC4_LDB, r, VC4_PC, 0);
-                    vc4_alu16i(VC4_SHL, r, 24);
-                    vc4_alu16i(VC4_ASR, r, 24);
+                    vc4_alu16i(VC4_SIGNEXT, r, 7);
                 } else {
                     vc4_ldst48(sz, r, VC4_PC, 0);
                 }
@@ -469,10 +652,8 @@ ST_FUNC void load(int r, SValue *sv)
                     la.end = -1;
                     VC4_EMIT16(0xa080 | r);
                     VC4_EMIT16(la.a << 11 | 0x0700 | la.b);
-                    if (sz == VC4_LDSB) {
-                        vc4_alu16i(VC4_SHL, r, 24);
-                        vc4_alu16i(VC4_ASR, r, 24);
-                    }
+                    if (sz == VC4_LDSB)
+                        vc4_alu16i(VC4_SIGNEXT, r, 7);
                     return;
                 }
             }
@@ -480,11 +661,10 @@ ST_FUNC void load(int r, SValue *sv)
             tcc_error("VC4: load: unhandled lvalue %x", fr);
         }
         if (sz == VC4_LDSB) {
-            /* GCC uses the 32-bit ldsb, but resim does not know it; ldb and
-               a shift pair works everywhere and is as long */
+            /* GCC uses the 32-bit ldsb, but resim does not know it: ldb
+               and a 16-bit signext */
             vc4_ldst(VC4_LDB, r, base, off);
-            vc4_alu16i(VC4_SHL, r, 24);
-            vc4_alu16i(VC4_ASR, r, 24);
+            vc4_alu16i(VC4_SIGNEXT, r, 7);
         } else {
             vc4_ldst(sz, r, base, off);
         }
@@ -507,9 +687,11 @@ ST_FUNC void load(int r, SValue *sv)
         vc4_alu32i(VC4_MOV, cc ^ 1, r, 0, 0);
         vc4_alu32i(VC4_MOV, cc, r, 0, 1);
     } else if ((v & ~1) == VT_JMP) {
-        int t = v & 1;
+        int t = v & 1, pos;
         vc4_mov_imm(r, t);
+        pos = ind;
         vc4_bcc16(VC4_AL, 4);  /* skip the next 16-bit insn */
+        vc4_br_add(pos, BR_B16, 0);
         gsym(fc);
         vc4_mov_imm(r, t ^ 1);
     } else {
@@ -525,6 +707,21 @@ ST_FUNC void store(int r, SValue *sv)
     if ((sv->type.t & VT_BTYPE) == VT_STRUCT)
         tcc_error("VC4: struct store");
     sz = vc4_accsz(&sv->type, 1);
+    if (pinc.on && !nocode_wanted) {
+        if (fr == pinc.rv && (sv->r & VT_LVAL) && r != pinc.rv
+            && vc4_sz_bytes(sz) == pinc.d && vc4_on_vstack(sv)
+            && !vc4_inc_refs(sv)) {
+            /* *p++ = v */
+            pinc.on = 0;
+            vc4_ldst_postinc(sz, r, pinc.rv);
+            return;
+        }
+        if (fr == pinc.rv || ((fr == VT_LOCAL || fr == VT_LLOCAL)
+                              && vc4_slot_reg(fc) == pinc.rv)) {
+            vc4_inc_flush_sv(sv);
+            fr = sv->r & VT_VALMASK;
+        }
+    }
     if ((fr == VT_LOCAL || fr == VT_LLOCAL) && vc4_slot_reg(fc) >= 0) {
         int rv = vc4_slot_reg(fc);
         if (fr == VT_LLOCAL || sz != VC4_ST)
@@ -598,6 +795,7 @@ ST_FUNC void gfunc_call(int nb_args)
     int i, nreg = nb_args < 6 ? nb_args : 6;
     int stack = (nb_args - nreg) * 4;
 
+    vc4_inc_flush_sv(NULL);
     for (i = 0; i < nb_args; i++)
         vc4_check_arg_type(&vtop[1 + i - nb_args].type);
 
@@ -657,6 +855,11 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
     loc = 0;
     func_vc = 0;
     nb_regvar = 0;
+    fn_start = ind;
+    nb_brs = 0;
+    fn_asm = 0;
+    pinc.on = 0;
+    fn_reloc = cur_text_section->reloc ? cur_text_section->reloc->data_offset : 0;
     func_regsave = func_var;
     if (func_regsave) {
         /* r0-r5 right below the stack arguments, so va_arg walks both;
@@ -724,11 +927,19 @@ ST_FUNC int vc4_inc_regvar(int post, int d)
 
     if (rv < 0 || nocode_wanted)
         return 0;
+    vc4_inc_flush_sv(NULL);   /* an earlier p++ */
     if ((vtop->type.t & VT_BTYPE) == VT_PTR) {
         int s = type_size(pointed_type(&vtop->type), &align);
         if (s <= 0)
             return 0;
         d *= s;
+        if (post && d == s && (s == 1 || s == 2 || s == 4)) {
+            /* p++: the old value is rv itself, the increment waits */
+            pinc.rv = rv, pinc.d = d, pinc.on = 1;
+            vtop->r = rv;
+            vtop->r2 = VT_CONST;
+            return 1;
+        }
     }
     if (post) {
         r = get_reg(RC_INT);
@@ -746,10 +957,246 @@ ST_FUNC int vc4_inc_regvar(int post, int d)
     return 1;
 }
 
+/* ---- branch relaxation at the end of a function ----
+   Forward jumps are emitted as 32-bit "b<cc>" because the target is not
+   known yet. Once the function is complete: "cmp ra,rb|#imm; b<cc> L"
+   becomes one fused "b<cc> ra,rb|#imm,L" (as GCC emits it, ra/rb in
+   r0-r15, imm 0..63, L within 1 KB, or 256 bytes with imm), and other
+   jumps within 128 bytes become 16-bit. Every edit only shrinks code, so
+   distances only shrink; sites that do not fit after a pass go back to
+   the longer form until nothing changes. Not done for functions with
+   inline asm, debug or coverage code, or symbols defined inside them. */
+
+static int vc4_br_cmp(const void *a, const void *b)
+{
+    const VC4Br *x = a, *y = b;
+    return x->pos - y->pos;
+}
+
+static int vc4_sext(unsigned v, int bits)
+{
+    return (int)(v << (32 - bits)) >> (32 - bits);
+}
+
+/* the edited region of a site in state st: [start, end), new length */
+static int vc4_br_start(VC4Br *b) { return b->st == 2 ? b->cmp : b->pos; }
+static int vc4_br_end(VC4Br *b) { return b->pos + (b->kind == BR_B16 ? 2 : 4); }
+static int vc4_br_len(VC4Br *b)
+{
+    return b->kind == BR_B16 || (b->kind == BR_B32 && b->st == 1) ? 2 : 4;
+}
+
+/* new address of the old address x; sav[i] = bytes saved by sites < i */
+static int vc4_relax_map(int x, int *sav)
+{
+    int lo = 0, hi = nb_brs;   /* first site with start >= x */
+    while (lo < hi) {
+        int m = (lo + hi) >> 1;
+        if (vc4_br_start(&brs[m]) < x)
+            lo = m + 1;
+        else
+            hi = m;
+    }
+    return x - sav[lo];
+}
+
+static void vc4_relax(void)
+{
+    unsigned char *d = cur_text_section->data, *old;
+    int i, j, n, changed, end = ind, *sav;
+    ElfW(Sym) *sym;
+    ElfW_Rel *rel;
+
+    if (nocode_wanted || fn_asm || tcc_state->do_debug
+        || tcc_state->test_coverage || nb_brs == 0)
+        goto reset;
+    /* symbols (labels whose address is taken) inside the function */
+    n = symtab_section->data_offset / sizeof(ElfW(Sym));
+    sym = (ElfW(Sym) *)symtab_section->data;
+    for (i = 1; i < n; i++)
+        if (sym[i].st_shndx == cur_text_section->sh_num
+            && sym[i].st_value > (unsigned)fn_start && sym[i].st_value < (unsigned)end)
+            goto reset;
+
+    qsort(brs, nb_brs, sizeof *brs, vc4_br_cmp);
+    for (i = j = 0; i < nb_brs; i++)   /* drop duplicates, stale sites */
+        if (brs[i].pos >= fn_start && brs[i].pos < end
+            && (j == 0 || brs[j - 1].pos != brs[i].pos))
+            brs[j++] = brs[i];
+    nb_brs = j;
+
+    /* decode */
+    for (i = 0; i < nb_brs; i++) {
+        VC4Br *b = &brs[i];
+        unsigned h0 = read16le(d + b->pos), h1;
+        if (vc4_br_end(b) > end)
+            goto reset;
+        h1 = b->kind == BR_B16 ? 0 : read16le(d + b->pos + 2);
+        switch (b->kind) {
+        case BR_B32:
+            if ((h0 & 0xf080) != 0x9000)
+                goto reset;
+            b->cc = (h0 >> 8) & 15;
+            b->tgt = b->pos + 2 * vc4_sext((h0 & 0x7f) << 16 | h1, 23);
+            break;
+        case BR_B16:
+            if ((h0 & 0xf800) != 0x1800)
+                goto reset;
+            b->cc = (h0 >> 7) & 15;
+            b->tgt = b->pos + 2 * vc4_sext(h0 & 0x7f, 7);
+            break;
+        case BR_CREG:
+            if ((h0 & 0xf000) != 0x8000 || (h1 & 0xc000) != 0x4000)
+                goto reset;
+            b->tgt = b->pos + 2 * vc4_sext(h1 & 0x3ff, 10);
+            break;
+        case BR_CIMM:
+            if ((h0 & 0xf000) != 0x8000 || (h1 & 0xc000) != 0xc000)
+                goto reset;
+            b->tgt = b->pos + 2 * vc4_sext(h1 & 0xff, 8);
+            break;
+        default:
+            goto reset;
+        }
+        if (b->tgt < fn_start || b->tgt >= end)
+            goto reset;
+    }
+
+    /* optimistic start */
+    for (i = 0; i < nb_brs; i++) {
+        VC4Br *b = &brs[i];
+        b->st = 0;
+        if (b->kind != BR_B32)
+            continue;
+        b->st = 1;
+        if (b->cc == VC4_AL || b->cmp < fn_start || b->ra > 15
+            || (b->rb >= 0 ? b->rb > 15 : b->imm < 0 || b->imm > 63)
+            || (i > 0 && b->cmp < vc4_br_end(&brs[i - 1])))
+            continue;
+        /* the flags must die here: a following b<cc> without its own
+           compare (long long compares) still reads them */
+        if (i + 1 < nb_brs && brs[i + 1].pos == b->pos + 4
+            && brs[i + 1].kind == BR_B32 && brs[i + 1].cmp < 0
+            && brs[i + 1].cc != VC4_AL)
+            continue;
+        for (j = 0; j < nb_brs; j++)   /* nothing may jump past the cmp */
+            if (brs[j].tgt > b->cmp && brs[j].tgt <= b->pos)
+                break;
+        if (j == nb_brs)
+            b->st = 2;
+    }
+
+    sav = tcc_malloc((nb_brs + 1) * sizeof *sav);
+    do {
+        changed = 0;
+        for (i = sav[0] = 0; i < nb_brs; i++)
+            sav[i + 1] = sav[i] + vc4_br_end(&brs[i]) - vc4_br_start(&brs[i])
+                         - vc4_br_len(&brs[i]);
+        for (i = 0; i < nb_brs; i++) {
+            VC4Br *b = &brs[i];
+            int at = vc4_relax_map(vc4_br_start(b), sav);
+            int off = (vc4_relax_map(b->tgt, sav) - at) >> 1;
+            int ok = b->kind == BR_B16 || (b->kind == BR_B32 && b->st == 1)
+                         ? off >= -64 && off < 64
+                   : b->kind == BR_CIMM || (b->st == 2 && b->rb < 0)
+                         ? off >= -128 && off < 128
+                   : b->kind == BR_CREG || b->st == 2
+                         ? off >= -512 && off < 512
+                   : 1;
+            if (!ok) {
+                if (b->kind != BR_B32)
+                    goto fail;   /* cannot happen: distances only shrink */
+                b->st--;
+                changed = 1;
+            }
+        }
+    } while (changed);
+
+    /* targets and relocations must not fall inside an edited region */
+    for (i = 0; i < nb_brs; i++) {
+        int s = vc4_br_start(&brs[i]), e = vc4_br_end(&brs[i]);
+        for (j = 0; j < nb_brs; j++)
+            if (brs[j].tgt > s && brs[j].tgt < e)
+                goto fail;
+    }
+    if (cur_text_section->reloc) {
+        Section *sr = cur_text_section->reloc;
+        for (rel = (ElfW_Rel *)(sr->data + fn_reloc);
+             rel < (ElfW_Rel *)(sr->data + sr->data_offset); rel++)
+            for (i = 0; i < nb_brs; i++)
+                if (rel->r_offset >= (unsigned)vc4_br_start(&brs[i])
+                    && rel->r_offset < (unsigned)vc4_br_end(&brs[i]))
+                    goto fail;
+    }
+
+    /* rewrite */
+    old = tcc_malloc(end - fn_start);
+    memcpy(old, d + fn_start, end - fn_start);
+    {
+        int src = fn_start;
+        ind = fn_start;
+        for (i = 0; i < nb_brs; i++) {
+            VC4Br *b = &brs[i];
+            int s = vc4_br_start(b), at, off;
+            memcpy(d + ind, old + (src - fn_start), s - src);
+            ind += s - src;
+            at = ind;
+            off = vc4_relax_map(b->tgt, sav) - at;
+            switch (b->kind) {
+            case BR_B32:
+                if (b->st == 2 && b->rb >= 0)
+                    vc4_bcmp_reg(b->cc, b->ra, b->rb, off);
+                else if (b->st == 2)
+                    vc4_bcmp_imm(b->cc, b->ra, b->imm, off);
+                else if (b->st == 1)
+                    vc4_bcc16(b->cc, off);
+                else
+                    vc4_bcc32(b->cc, off);
+                break;
+            case BR_B16:
+                vc4_bcc16(b->cc, off);
+                break;
+            case BR_CREG:
+            case BR_CIMM: {
+                unsigned h1 = read16le(old + (b->pos + 2 - fn_start));
+                memcpy(d + ind, old + (b->pos - fn_start), 2);
+                ind += 2;
+                if (b->kind == BR_CREG)
+                    h1 = (h1 & ~0x3ff) | ((off >> 1) & 0x3ff);
+                else
+                    h1 = (h1 & ~0xff) | ((off >> 1) & 0xff);
+                VC4_EMIT16(h1);
+                break;
+            }
+            }
+            src = vc4_br_end(b);
+        }
+        memcpy(d + ind, old + (src - fn_start), end - src);
+        ind += end - src;
+    }
+    tcc_free(old);
+    if (cur_text_section->reloc) {
+        Section *sr = cur_text_section->reloc;
+        for (rel = (ElfW_Rel *)(sr->data + fn_reloc);
+             rel < (ElfW_Rel *)(sr->data + sr->data_offset); rel++)
+            if (rel->r_offset >= (unsigned)fn_start && rel->r_offset < (unsigned)end)
+                rel->r_offset = vc4_relax_map(rel->r_offset, sav);
+    }
+fail:
+    tcc_free(sav);
+reset:
+    nb_brs = 0;
+    if (ind != end) {
+        lc.end = li.end = la.end = st_end = -1;
+        vc4_label_ind = ind;
+    }
+}
+
 ST_FUNC void gfunc_epilog(void)
 {
     int v = (-loc + 3) & -4, saved_ind;
 
+    vc4_inc_flush_sv(NULL);
     vc4_add_imm(VC4_SP, FP, VC4_FP_BIAS);
     if (func_regsave) {
         vc4_ldst(VC4_LD, TREG_R6, VC4_SP, 0);
@@ -771,10 +1218,12 @@ ST_FUNC void gfunc_epilog(void)
         tcc_error("VC4: stack frame of %d bytes, more than 32 KB", v);
     vc4_alu32i16(VC4_ADD, VC4_SP, -v);
     ind = saved_ind;
+    vc4_relax();
 }
 
 ST_FUNC void ggoto(void)
 {
+    vc4_inc_flush_sv(NULL);
     gcall_or_jmp(0);
     vtop--;
 }
@@ -821,6 +1270,31 @@ ST_FUNC void gen_opi(int op)
         break;
     }
 
+    /* 0 - x: neg; -(x & 1): signext from bit 0 */
+    if (vop == VC4_SUB && !vc4_const_op()
+        && (vtop[-1].r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
+        && vtop[-1].c.i == 0) {
+        int rs = vc4_regvar_of(vtop), pos;
+        if (rs < 0)
+            rs = gv(RC_INT);
+        r = rs < 8 ? rs : get_reg(RC_INT);
+        if (rs < 8 && la.end == ind && la.rd == rs && vc4_label_ind != ind
+            && la.kind == LA_ALUI && la.c == 1
+            && (la.op == VC4_AND || la.op == VC4_BMASK)) {
+            int a = la.a;
+            ind = pos = la.pos;
+            vc4_alu32i(VC4_SIGNEXT, VC4_AL, r, a, 0);
+            la_set(pos, r, LA_ALUI, VC4_SIGNEXT, a, 0, 0);
+        } else {
+            vc4_alu16(VC4_NEG, r, rs);
+            la.end = -1;
+        }
+        vtop--;
+        vtop->r = r;
+        vtop->r2 = VT_CONST;
+        return;
+    }
+
     if (vc4_const_op()) {
         int lr = vc4_regvar_of(vtop - 1);
         c = vtop->c.i;
@@ -831,12 +1305,14 @@ ST_FUNC void gen_opi(int op)
             if (vop == VC4_SUB)
                 vop = VC4_ADD, c = -c;
             if (vop == VC4_CMP) {
+                int pos = ind;
                 if (VC4_FITS_S(c, 6))
                     vc4_alu32i(VC4_CMP, VC4_AL, 0, lr, c);
                 else if (VC4_FITS_S(c, 16))
                     vc4_alu32i16(VC4_CMP, lr, c);
                 else
                     vc4_alu48(VC4_CMP, lr, c);
+                lc_set_imm(pos, lr, c);
                 goto done;
             }
             r = get_reg(RC_INT);
@@ -865,10 +1341,26 @@ ST_FUNC void gen_opi(int op)
             vswap();
             r = gv(RC_INT);
             vswap();
+            if ((vop == VC4_LSR || vop == VC4_ASR) && c > 0 && la.end == ind
+                && la.rd == r && la.kind == LA_ALUI && la.op == VC4_SHL
+                && la.c == c && vc4_label_ind != ind) {
+                /* (x << c) >> c: bmask (unsigned) or signext (signed) */
+                int a = la.a, nop = vop == VC4_LSR ? VC4_BMASK : VC4_SIGNEXT;
+                int n = vop == VC4_LSR ? 32 - c : 31 - c, pos = la.pos;
+                ind = pos;
+                if (a == r)
+                    vc4_alu16i(nop, r, n);
+                else
+                    vc4_alu32i(nop, VC4_AL, r, a, n);
+                la_set(pos, r, LA_ALUI, nop, a, 0, n);
+                goto done;
+            }
             {
                 int pos = ind;
                 vc4_alu16i(vop, r, c);
                 la_set(pos, r, LA_ALUI, vop, r, 0, c);
+                if (vop == VC4_CMP)
+                    lc_set_imm(pos, r, c);
             }
             goto done;
         }
@@ -906,14 +1398,19 @@ ST_FUNC void gen_opi(int op)
         vswap();
         r = gv(RC_INT);
         vswap();
-        if (vop == VC4_ADD)
-            vc4_add_imm(r, r, c);
-        else if (vop == VC4_CMP && VC4_FITS_S(c, 6))
-            vc4_alu32i(VC4_CMP, VC4_AL, 0, r, c);
-        else if (VC4_FITS_S(c, 16))
-            vc4_alu32i16(vop, r, c);
-        else
-            vc4_alu48(vop, r, c);
+        {
+            int pos = ind;
+            if (vop == VC4_ADD)
+                vc4_add_imm(r, r, c);
+            else if (vop == VC4_CMP && VC4_FITS_S(c, 6))
+                vc4_alu32i(VC4_CMP, VC4_AL, 0, r, c);
+            else if (VC4_FITS_S(c, 16))
+                vc4_alu32i16(vop, r, c);
+            else
+                vc4_alu48(vop, r, c);
+            if (vop == VC4_CMP)
+                lc_set_imm(pos, r, c);
+        }
         goto done;
     }
     {

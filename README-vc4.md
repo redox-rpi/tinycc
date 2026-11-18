@@ -32,6 +32,7 @@ addresses so a build script can do such checks.
 | `tests/vc4/abi-sim.sh`, `abi-test.c`, `abi-main.c` | ABI and code generation test: the host build and the TCC build run in resim must print the same |
 | `tests/vc4/sim-rt.c` | `printf` on the mini UART for test programs in resim |
 | `tests/vc4/sim-crt.S`, `sim-libc.c` | start file and `mem*`/`strlen` for test programs built and linked by vc4-tcc alone; `abi-sim.sh` and `fat-sim.sh` run such an "all TCC" build too |
+| `tests/vc4/fb-sim.sh`, `fb-sim-main.c` | the firmware's `fb_pattern` and `crc32` (B3s of tinycc#13), built by vc4-tcc and by GCC `-Os`, in resim against a host build; `BENCH=1` prints the instruction counts |
 | `tests/vc4/fat-sim.sh`, `fat-sim-main.c` | runs TCC's `fat.c` in the resim simulator (vc4emul) on FAT16 and FAT32 card images; every file must load with the right size and checksum |
 
 ## Build and test
@@ -44,6 +45,7 @@ tests/vc4/bootcode-build.sh /path/to/rpi-open-firmware /path/to/prefix/bin/vc4-e
 tests/vc4/abi-sim.sh /path/to/prefix/bin/vc4-elf- /path/to/vc4emul
 tests/vc4/asm-test.sh /path/to/prefix/bin/vc4-elf-
 tests/vc4/fat-sim.sh /path/to/rpi-open-firmware /path/to/prefix/bin/vc4-elf- /path/to/vc4emul
+tests/vc4/fb-sim.sh /path/to/rpi-open-firmware-release-0.1 /path/to/prefix/bin/vc4-elf- /path/to/vc4emul
 ```
 
 vc4emul comes from resim (github.com/puppeh/resim, the vc4-toolchain
@@ -56,7 +58,8 @@ even with that fixed a shift by 0 of a negative value gives -1
 (`0xffffffff << 32`); replace the case's body with
 `registers.setRegister(rd, (uint32_t)((int32_t)a >> (b & 31)));` before
 building (abi-test's `asr0` line fails without it). It has no `ldsb`, so vc4-tcc loads signed
-bytes with `ldb` and a shift pair. resim also lacks `switch` and
+bytes with `ldb` and `signext r,7`; `signext` needs redox-rpi/resim#2
+(resim sign-extended from bit n-1). resim also lacks `switch` and
 `bitflip #imm`: newlib's `printf` and GCC's `fat.c` do not run there.
 `stm r6-r7,lr` stores lr at the top in resim; vc4-tcc's variadic
 prologue therefore saves r6, r7 and lr one by one.
@@ -176,7 +179,10 @@ added to `VideoCoreIVExecute.hpp`, locally).
   `tcc.h`). For VC4 only: the register-variable scan before
   `gen_function` (`regvar_ids`), hooks for `++`/`--`
   (`vc4_inc_regvar`) and the loop branch (`vc4_loop_branch`), no `i*1`
-  for byte pointers. `tccpp.c` gets `tok_macro_top()`.
+  for byte pointers, and (tinycc#16) `vc4_vpop` in `vpop()`,
+  `vc4_inc_flush` at each statement in `block()` and `vc4_note_asm` in
+  `asm_gen_code` for the pending post-increment. `tccpp.c` gets
+  `tok_macro_top()`.
 - `tccelf.c`: `-Wl,-Map=FILE` (parsed but unused before) writes the
   output's sections and global symbols with their final addresses; for
   VC4, code sections come first in the image, so the first object's code

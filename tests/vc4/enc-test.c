@@ -62,7 +62,7 @@ int main(int argc, char **argv)
     static const int ops32[] = { VC4_ADD, VC4_SUB, VC4_MUL, VC4_AND,
         VC4_OR, VC4_EOR, VC4_SHL, VC4_LSR, VC4_ASR, VC4_BIC };
     static const int imm5ops[] = { VC4_MOV, VC4_ADD, VC4_SUB, VC4_MUL,
-        VC4_CMP, VC4_SHL, VC4_LSR, VC4_ASR };
+        VC4_CMP, VC4_SHL, VC4_LSR, VC4_ASR, VC4_BMASK, VC4_SIGNEXT };
     static const int offs12[] = { 64, 2000, 2047, -4, -100, -2048 };
     static const int offs27[] = { 4096, -4096, 67108863, -67108864 };
 
@@ -95,6 +95,9 @@ int main(int argc, char **argv)
         T(1, vc4_ldst16(sz, 1, 14), "%s r1,(r14)", sz_name[sz]);
     T(1, vc4_ldst16_off(0, 2, 3, 4), "ld r2,(r3+0x4)");
     T(1, vc4_ldst16_off(1, 2, 3, 60), "st r2,(r3+0x3c)");
+    /* post-increment: ld/st rd,(ra++) */
+    for (sz = 0; sz < 6; sz++)
+        T(1, vc4_ldst_postinc(sz, 2, 9), "%s r2,(r9++)", sz_name[sz]);
 
     /* 32-bit ALU, three registers, with and without a condition */
     for (i = 0; i < (int)(sizeof ops32 / sizeof *ops32); i++) {
@@ -116,6 +119,9 @@ int main(int argc, char **argv)
     T(1, vc4_alu32i(VC4_ADD, VC4_AL, VC4_SP, VC4_SP, -8), "add sp,sp,-8");
     T(1, vc4_alu32i(VC4_ADD, VC4_AL, 2, 7, 31), "add r2,r7,31");
     T(1, vc4_alu32i(VC4_ADD, VC4_AL, 2, 7, -32), "add r2,r7,-32");
+    T(1, vc4_alu32i(VC4_SIGNEXT, VC4_AL, 2, 3, 0), "signext r2,r3,0");
+    T(1, vc4_alu32i(VC4_SIGNEXT, VC4_AL, 2, 3, 23), "signext r2,r3,23");
+    T(1, vc4_alu32i(VC4_BMASK, VC4_AL, 20, 3, 16), "bmask r20,r3,16");
 
     /* 32-bit, 16-bit immediate */
     T(1, vc4_alu32i16(VC4_MOV, 5, 32), "mov r5,32");
@@ -176,6 +182,8 @@ int main(int argc, char **argv)
         T(0, vc4_bcmp_reg(cc, 15, 0, 1022), "b%s r15,r0,0x%x", cc_name[cc], start + 1022);
         T(0, vc4_bcmp_imm(cc, 3, 63, 254), "b%s r3,0x3f,0x%x", cc_name[cc], start + 254);
         T(0, vc4_bcmp_imm(cc, 3, 0, -256), "b%s r3,0x0,0x%x", cc_name[cc], start - 256);
+        T(0, vc4_addcmpb_reg(cc, 9, 1, 4, -1024), "addcmpb%s r9,1,r4,0x%x", cc_name[cc], start - 1024);
+        T(0, vc4_addcmpb_imm(cc, 9, -8, 63, 254), "addcmpb%s r9,-8,0x3f,0x%x", cc_name[cc], start + 254);
     }
     T(0, vc4_bcc16(VC4_AL, 126), "b 0x%x", start + 126);
     T(0, vc4_bcc32(VC4_AL, -0x800000), "b 0x%x", (start - 0x800000) & 0xffffffff);

@@ -930,6 +930,9 @@ ST_FUNC void vpop(void)
         gsym(vtop->jtrue);
         gsym(vtop->jfalse);
     }
+#ifdef TCC_TARGET_VC4
+    vc4_vpop();   /* a dropped p++ still increments p */
+#endif
     vtop--;
 }
 
@@ -7360,6 +7363,9 @@ static void block(int flags)
     Sym *s;
 
 again:
+#ifdef TCC_TARGET_VC4
+    vc4_inc_flush();   /* no pending p++ across statements */
+#endif
     t = tok;
     /* If the token carries a value, next() might destroy it. Only with
        invalid code such as f(){"123"4;} */
