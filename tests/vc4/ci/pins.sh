@@ -18,8 +18,7 @@ FAT_BOOT_REV=a8bcbe7a634661fea5075027ed6edb5c3a4c635c
 FB_REV=22bbd724d47ff5381b4651e1e43e10344fa2bb8d
 
 # VPU simulator for abi-sim and fat-sim: our fork of mgottschlag/resim (MIT),
-# the same commit as redox-rpi/vc4-toolchain's toolchain.lock. c44034e is
-# branch vc4-exts (resim#2, signext from bit n); after its merge both pins
-# move to the merge commit.
+# the same commit as redox-rpi/vc4-toolchain's toolchain.lock: master, the
+# merge of resim#2 (signext from bit n).
 RESIM_REPO=redox-rpi/resim
-RESIM_REV=c44034e23b54fb153eb96f132e98aef6aad38982
+RESIM_REV=17c3620bc98a96afa594a3cc2a16fcb1c3d74a1f
