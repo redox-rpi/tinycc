@@ -94,10 +94,10 @@ static int r6_used;   /* r6 (scratch, callee-saved) written */
 
 /* Leaf functions (no call, see regvar_leaf): the first VC4_LEAF_ARGS
    parameters that the scan picked stay in their argument register, which
-   is then not allocated (r3-r5 remain); with no other register variable
+   is then not allocated (r4 and r5 remain); with no other register variable
    and no frame there is nothing to save, and the function is its body
    and "rts", as GCC's. */
-#define VC4_LEAF_ARGS 3
+#define VC4_LEAF_ARGS 4
 static int fn_leaf, argrv_off[VC4_LEAF_ARGS], argrv_reg[VC4_LEAF_ARGS], nb_argrv;
 
 /* a pending p++ on the pointer register variable rv (vc4_inc_regvar) */
