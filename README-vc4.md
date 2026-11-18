@@ -181,7 +181,11 @@ added to `VideoCoreIVExecute.hpp`, locally).
   (`vc4_inc_regvar`) and the loop branch (`vc4_loop_branch`), no `i*1`
   for byte pointers, and (tinycc#16) `vc4_vpop` in `vpop()`,
   `vc4_inc_flush` at each statement in `block()` and `vc4_note_asm` in
-  `asm_gen_code` for the pending post-increment. `tccpp.c` gets
+  `asm_gen_code` for the pending post-increment; the scan also counts a
+  parameter used once as twice and sets `regvar_leaf` (no call seen),
+  and `&&label` calls `vc4_note_label_addr` (no branch relaxation in that
+  function). `tcc.h`: for VC4 `reg_classes` is not `const`, so a leaf
+  function can take r0–r3 out of allocation. `tccpp.c` gets
   `tok_macro_top()`.
 - `tccelf.c`: `-Wl,-Map=FILE` (parsed but unused before) writes the
   output's sections and global symbols with their final addresses; for
