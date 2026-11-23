@@ -94,7 +94,8 @@ static int r6_used;   /* r6 (scratch, callee-saved) written */
 
 /* Leaf functions (no call, see regvar_leaf): the first VC4_LEAF_ARGS
    parameters that the scan picked stay in their argument register, which
-   is then not allocated (r4 and r5 remain); with no other register variable
+   is then not allocated (r4 and r5 remain), and picked locals take the
+   rest of r0-r3; with no other register variable
    and no frame there is nothing to save, and the function is its body
    and "rts", as GCC's. */
 #define VC4_LEAF_ARGS 4
@@ -145,10 +146,60 @@ static int vc4_regvar_wanted(int v, CType *type)
     return nb_regvar < REGVAR_MAX && vc4_regvar_name(v, type);
 }
 
+/* a free one of r0-r3 for a local of a leaf function, or -1: not held by
+   a parameter or another local, and not on the value stack (a
+   declaration inside a statement expression) */
+static int vc4_leaf_reg(void)
+{
+    int r, i;
+    SValue *p;
+    if (!fn_leaf || nb_argrv >= VC4_LEAF_ARGS)
+        return -1;
+    for (r = 0; r < VC4_LEAF_ARGS; r++) {
+        for (i = 0; i < nb_argrv && argrv_reg[i] != r; i++)
+            ;
+        if (i < nb_argrv)
+            continue;
+        for (p = vc4_vstack(); p <= vtop; p++)
+            if ((p->r & VT_VALMASK) == r || p->r2 == r)
+                break;
+        if (p > vtop)
+            return r;
+    }
+    return -1;
+}
+
+/* an allocatable register other than busy that nothing on the value stack
+   holds, or -1 */
+static int vc4_free_tmp(int busy)
+{
+    int r;
+    SValue *p;
+    for (r = 5; r >= 0; r--) {
+        if (r == busy || !(reg_classes[r] & RC_INT))
+            continue;
+        for (p = vc4_vstack(); p <= vtop; p++)
+            if ((p->r & VT_VALMASK) == r || p->r2 == r)
+                break;
+        if (p > vtop)
+            return r;
+    }
+    return -1;
+}
+
 ST_FUNC void vc4_local_var(Sym *sym)
 {
-    if (vc4_regvar_wanted(sym->v, &sym->type))
+    int r;
+    if (!vc4_regvar_name(sym->v, &sym->type))
+        return;
+    /* in a leaf, r0-r3 first: then often nothing needs saving */
+    if ((r = vc4_leaf_reg()) >= 0) {
+        argrv_off[nb_argrv] = sym->c;
+        argrv_reg[nb_argrv++] = r;
+        reg_classes[r] &= ~RC_INT;
+    } else if (vc4_regvar_wanted(sym->v, &sym->type)) {
         regvar_off[nb_regvar++] = sym->c;
+    }
 }
 
 static int vc4_slot_reg(int fc)
@@ -791,9 +842,12 @@ ST_FUNC void store(int r, SValue *sv)
             vc4_ldst48(sz, r, VC4_PC, 0);
             return;
         }
-        vc4_mov_imm(TREG_R6, fc);
-        base = TREG_R6;
-        r6_used = 1;
+        /* a fixed address (a hardware register): in a leaf a free
+           temporary instead of r6, which would have to be saved */
+        base = fn_leaf ? vc4_free_tmp(r) : -1;
+        if (base < 0)
+            base = TREG_R6, r6_used = 1;
+        vc4_mov_imm(base, fc);
     } else if (fr < VT_CONST) {
         base = fr;
     } else {

@@ -8922,13 +8922,17 @@ static TokenString *regvar_scan_body(Sym *func)
     int nv = 0, i, j, level = 0, plevel = 0, prev = 0, amp = 0, asm_level = -1;
     int depth = 0, loop_level[16], nloop = 0, hdr = -1, want_body = 0, has_asm = 0;
     int stmt_level[16], nstmt = 0;
+    /* ctl[l]: the '(' at paren level l follows if/while/for/switch, so a
+       '{' after its ')' is a statement, not a compound literal */
+    unsigned char ctl[32], cast[32];
+    int ctl_close = 0, cast_close = 0;
     Sym *s;
 
     nb_regvar_ids = 0;
     /* leaf: the scan sees no call. Anything that might call (a name or ')'
        or ']' before '(', initializers, struct, long long and floating
-       point types) makes it not a leaf; gfunc_call() stops with an error
-       if a call still comes */
+       point types) makes it not a leaf, and so does goto; gfunc_call()
+       stops with an error if a call still comes */
     regvar_leaf = 1;
     for (;;) {
         int t = tok;
@@ -8953,18 +8957,36 @@ static TokenString *regvar_scan_body(Sym *func)
                 nloop--, depth--;
         }
         want_body = 0;
-        if ((t == '(' && (prev >= TOK_UIDENT || prev == ')' || prev == ']'))
-            || ((t == '{' || t == TOK_STR) && (prev == '=' || prev == ')'))
+        /* a group that starts with a type is a cast: "(T *)(x)" is no call */
+        if (prev == '(' && plevel >= 1 && plevel <= 32)
+            cast[plevel - 1] = t == TOK_CONST1 || t == TOK_VOLATILE1
+                || t == TOK_UNSIGNED || t == TOK_SIGNED1 || t == TOK_VOID
+                || t == TOK_CHAR || t == TOK_INT || t == TOK_SHORT
+                || t == TOK_LONG || t == TOK_BOOL
+                || (t >= TOK_UIDENT && (s = sym_find(t))
+                    && (s->type.t & VT_TYPEDEF));
+        if ((t == '(' && (prev >= TOK_UIDENT || prev == ']'
+                          || (prev == ')' && !cast_close)))
+            || ((t == '{' || t == TOK_STR)
+                && (prev == '=' || (prev == ')' && !ctl_close)))
             || t == TOK_STRUCT || t == TOK_UNION || t == TOK_FLOAT
             || t == TOK_DOUBLE || t == TOK_CLLONG || t == TOK_CULLONG
             || t == TOK_CFLOAT || t == TOK_CDOUBLE || t == TOK_CLDOUBLE
             || (t == TOK_LONG && prev == TOK_LONG)
+            /* a goto back over a declaration would find a local's r0-r3
+               used as a temporary there */
+            || t == TOK_GOTO
             || (t >= TOK_UIDENT && (s = sym_find(t)) && regvar_type_calls(&s->type)))
             regvar_leaf = 0;
         if (t == '(') {
+            if (plevel >= 0 && plevel < 32)
+                ctl[plevel] = prev == TOK_IF || prev == TOK_WHILE
+                    || prev == TOK_FOR || prev == TOK_SWITCH, cast[plevel] = 0;
             plevel++;
         } else if (t == ')') {
             plevel--;
+            ctl_close = plevel >= 0 && plevel < 32 && ctl[plevel];
+            cast_close = plevel >= 0 && plevel < 32 && cast[plevel];
             if (asm_level == plevel)
                 asm_level = -1;
             if (hdr == plevel) {     /* end of a for/while header */

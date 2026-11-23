@@ -80,12 +80,16 @@ in `rts`.
   A parameter used once counts as used twice: it arrives in a register,
   and moving it to r8.. costs no more than storing it (#16).
 - *Leaf functions* (#16): the same scan notes whether the body may call
-  (a name, `)` or `]` before `(`, an initializer, struct/union, `long
-  long` or floating point types, also through pointers and typedefs). In
-  a leaf the first four parameters the scan picked stay in r0–r3, which
-  are then not allocated for expressions (r4, r5 remain). A call that
-  still comes in such a function stops the compile with an internal
-  error, never wrong code.
+  (a name, `]` or a non-cast `)` before `(`; an initializer or compound
+  literal; struct/union, `long long` or floating point types, also
+  through pointers and typedefs). A `{` after an if/while/for/switch
+  header and `(T *)(addr)` casts (the firmware's `HW_REGISTER` macros) do
+  not count; `goto` makes a function not a leaf. In a leaf the first four
+  parameters the scan picked stay in r0–r3, picked locals take what the
+  parameters leave of r0–r3, and those registers are then not allocated
+  for expressions (r4, r5 remain). A store to a fixed address uses a free
+  temporary instead of r6. A call that still comes in such a function
+  stops the compile with an internal error, never wrong code.
 - *Loop rotation* (`tccgen.c`): the loop condition is compiled after the
   body as "jump back if true", so one jump per iteration instead of three.
 - *Fused loop branch:* `add rd,#i; cmp rd,rs; b<cc> top` at the end of a
