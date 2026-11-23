@@ -2897,22 +2897,23 @@ static int compare_types(CType *type1, CType *type2, int unqualified)
         t2 &= ~VT_DEFSIGN;
     }
     /* XXX: bitfields ? */
+    if ((t1 & VT_ARRAY_MASK) && (t2 & VT_ARRAY_MASK)) {
+        if ((t1 ^ t2) & ~VT_ARRAY_MASK)
+            return 0;
+        /* Only fixed bounds are stored as element counts. */
+        if ((t1 & t2 & VT_ARRAY) && type1->ref->c >= 0 && type2->ref->c >= 0
+            && type1->ref->c != type2->ref->c)
+            return 0;
+        return compare_types(pointed_type(type1), pointed_type(type2), unqualified);
+    }
     if (t1 != t2)
         return 0;
-
-    if ((t1 & VT_ARRAY)
-        && !(type1->ref->c < 0
-          || type2->ref->c < 0
-          || type1->ref->c == type2->ref->c))
-            return 0;
 
     /* test more complicated cases */
     bt1 = t1 & VT_BTYPE;
     if (bt1 == VT_PTR) {
         type1 = pointed_type(type1);
         type2 = pointed_type(type2);
-        if (unqualified && (t1 & VT_ARRAY))
-            return compare_types(type1, type2, 1);
         return is_compatible_types(type1, type2);
     } else if (bt1 == VT_STRUCT) {
         return (type1->ref == type2->ref);
@@ -2921,6 +2922,37 @@ static int compare_types(CType *type1, CType *type2, int unqualified)
     } else {
         return 1;
     }
+}
+
+/* A known constant bound takes precedence over a VLA bound, and both
+   take precedence over an unknown bound. */
+static int array_bound_rank(CType *type)
+{
+    if (type->t & VT_VLA)
+        return 1;
+    return type->ref->c < 0 ? 0 : 2;
+}
+
+/* Combine bounds along compatible pointer and array types. Each level
+   may get its bound from a different operand. */
+static CType composite_array_bounds(CType *a, CType *b)
+{
+    CType type, elem;
+
+    if (a->ref == b->ref || (a->t & VT_BTYPE) != VT_PTR
+        || (b->t & VT_BTYPE) != VT_PTR)
+        return *b;
+    if ((a->t & VT_ARRAY_MASK) && (b->t & VT_ARRAY_MASK)
+        && array_bound_rank(a) > array_bound_rank(b)) {
+        CType *tmp = a;
+        a = b;
+        b = tmp;
+    }
+    type = *b;
+    elem = composite_array_bounds(pointed_type(a), pointed_type(b));
+    if (elem.t != b->ref->type.t || elem.ref != b->ref->type.ref)
+        type.ref = sym_push(SYM_FIELD, &elem, 0, b->ref->c);
+    return type;
 }
 
 #define CMP_OP 'C'
@@ -2974,9 +3006,9 @@ static int combine_types(CType *dest, SValue *op1, SValue *op2, int op)
             CType *pt2 = pointed_type(type2);
             int pbt1 = pt1->t & VT_BTYPE;
             int pbt2 = pt2->t & VT_BTYPE;
-            int newquals, copied = 0;
-            if (pbt1 != VT_VOID && pbt2 != VT_VOID
-                && !compare_types(pt1, pt2, 1/*unqualif*/)) {
+            int compatible = pbt1 != VT_VOID && pbt2 != VT_VOID
+                && compare_types(pt1, pt2, 1/*unqualif*/);
+            if (pbt1 != VT_VOID && pbt2 != VT_VOID && !compatible) {
                 if (op != '?' && op != CMP_OP)
                   ret = 0;
                 else
@@ -2986,35 +3018,16 @@ static int combine_types(CType *dest, SValue *op1, SValue *op2, int op)
                      : "pointer type mismatch in comparison('%s' and '%s')");
             }
             if (op == '?') {
-                /* pointers to void get preferred, otherwise the
-                   pointed to types minus qualifs should be compatible */
+                CType target;
+                int quals = type_qualifiers(pt1) | type_qualifiers(pt2);
+
                 type = *((pbt1 == VT_VOID) ? type1 : type2);
-                /* combine qualifs */
-                newquals = type_qualifiers(pt1) | type_qualifiers(pt2);
-                if ((~type_qualifiers(pointed_type(&type))) & newquals)
-                  {
-                    /* copy the pointer target symbol */
-                    type.ref = sym_push(SYM_FIELD, &type.ref->type,
-                                        0, type.ref->c);
-                    copied = 1;
-                    parse_btype_qualify(pointed_type(&type), newquals);
-                  }
-                /* pointers to incomplete arrays get converted to
-                   pointers to completed ones if possible */
-                if (pt1->t & VT_ARRAY
-                    && pt2->t & VT_ARRAY
-                    && pointed_type(&type)->ref->c < 0
-                    && (pt1->ref->c > 0 || pt2->ref->c > 0))
-                  {
-                    if (!copied)
-                      type.ref = sym_push(SYM_FIELD, &type.ref->type,
-                                          0, type.ref->c);
-                    pointed_type(&type)->ref =
-                        sym_push(SYM_FIELD, &pointed_type(&type)->ref->type,
-                                 0, pointed_type(&type)->ref->c);
-                    pointed_type(&type)->ref->c =
-                        0 < pt1->ref->c ? pt1->ref->c : pt2->ref->c;
-                  }
+                target = compatible ? composite_array_bounds(pt1, pt2)
+                                    : *pointed_type(&type);
+                if (quals & ~type_qualifiers(&target))
+                    parse_btype_qualify(&target, quals);
+                if (target.t != type.ref->type.t || target.ref != type.ref->type.ref)
+                    type.ref = sym_push(SYM_FIELD, &target, 0, type.ref->c);
             }
         }
         if (op == CMP_OP)
@@ -3606,10 +3619,20 @@ static void check_restrict_type(CType *type)
         tcc_error("restrict-qualified type must be a pointer to object or incomplete type");
 }
 
+/* Copy shared array nodes before changing the element qualifiers. */
+static CType *qualifier_type(CType *type)
+{
+    while (type->t & VT_ARRAY_MASK) {
+        type->ref = sym_push(SYM_FIELD, &type->ref->type, 0, type->ref->c);
+        type = pointed_type(type);
+    }
+    return type;
+}
+
 /* Array qualifiers are represented on the element type. */
 static int type_qualifiers(CType *type)
 {
-    while (type->t & VT_ARRAY)
+    while (type->t & VT_ARRAY_MASK)
         type = pointed_type(type);
     return type->t & VT_QUAL;
 }
@@ -4772,10 +4795,7 @@ static void sym_to_attr(AttributeDef *ad, Sym *s)
    are added to the element type, copied because it could be a typedef. */
 static void parse_btype_qualify(CType *type, int qualifiers)
 {
-    while (type->t & VT_ARRAY) {
-        type->ref = sym_push(SYM_FIELD, &type->ref->type, 0, type->ref->c);
-        type = &type->ref->type;
-    }
+    type = qualifier_type(type);
     if (qualifiers & VT_RESTRICT)
         check_restrict_type(type);
     type->t |= qualifiers;
@@ -4989,12 +5009,19 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                 t = (t & ~(VT_BTYPE|VT_LONG)) | u;
             }
             continue;
-            /* GNUC typeof */
         case TOK_TYPEOF1:
         case TOK_TYPEOF2:
         case TOK_TYPEOF3:
+        case TOK_TYPEOF_UNQUAL1:
+        case TOK_TYPEOF_UNQUAL2:
+            n = tok;
             next();
             parse_expr_type(&type1);
+            if (type1.t & VT_BITFIELD)
+                tcc_error("typeof applied to a bit-field");
+            if ((n == TOK_TYPEOF_UNQUAL1 || n == TOK_TYPEOF_UNQUAL2)
+                && type_qualifiers(&type1))
+                qualifier_type(&type1)->t &= ~VT_QUAL;
             /* remove all storage modifiers except typedef */
             type1.t &= ~(VT_STORAGE&~VT_TYPEDEF);
             if (type1.ref) {
@@ -5439,6 +5466,9 @@ static void gfunc_param_typed(Sym *func, Sym *arg)
         /* default casting : only need to convert float to double */
         if ((vtop->type.t & VT_BTYPE) == VT_FLOAT) {
             gen_cast_s(VT_DOUBLE);
+        } else if ((vtop->type.t & VT_BTYPE) == VT_STRUCT) {
+            /* Pass the unqualified aggregate value. */
+            vtop->type.t &= ~VT_QUAL;
         } else if (vtop->type.t & VT_BITFIELD) {
             type.t = vtop->type.t & (VT_BTYPE | VT_UNSIGNED);
 	    type.ref = vtop->type.ref;
@@ -6821,6 +6851,28 @@ static void expr_cond(void)
     }
 }
 
+static int has_const_member(CType *type)
+{
+    Sym *s, *f;
+
+    if (type->t & VT_ARRAY)
+        return has_const_member(pointed_type(type));
+    if ((type->t & VT_BTYPE) != VT_STRUCT)
+        return 0;
+    s = type->ref;
+    if (s->a.const_members)
+        return s->a.const_members == 2;
+    for (f = s->next; f; f = f->next) {
+        if ((type_qualifiers(&f->type) & VT_CONSTANT)
+            || has_const_member(&f->type)) {
+            s->a.const_members = 2;
+            return 1;
+        }
+    }
+    s->a.const_members = 1;
+    return 0;
+}
+
 static void expr_eq(void)
 {
     int t;
@@ -6836,6 +6888,10 @@ static void expr_eq(void)
             expr_eq();
             gen_op(TOK_ASSIGN_OP(t));
         }
+        if ((vtop[-1].type.t & VT_BTYPE) == VT_STRUCT
+            && !(vtop[-1].type.t & VT_CONSTANT)
+            && has_const_member(&vtop[-1].type))
+            tcc_warning("assignment of read-only location");
         vstore();
     }
 }

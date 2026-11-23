@@ -722,4 +722,17 @@ int main(void)
 {
     return (int)f(main);
 }
+
+#elif defined test_const_vla_typedef
+void f(int n)
+{
+    typedef int Row[n];
+    const Row row;
+    row[0] = 1; /* warn */
+}
+
+#elif defined test_typeof_unqual_bitfield
+
+struct { unsigned int b : 1; } s;
+typeof_unqual(s.b) b; /* error */
 #endif

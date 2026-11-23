@@ -520,7 +520,7 @@ struct SymAttr {
     dllimport   : 1,
     addrtaken   : 1,
     nodebug     : 1,
-    xxxx        : 2; /* not used */
+    const_members : 2; /* 0: unknown, 1: no const members, 2: has const members */
 };
 
 /* function attributes or temporary attributes for parsing */
@@ -1078,7 +1078,8 @@ struct filespec {
 #define VT_VOLATILE    0x0200  /* volatile modifier */
 #define VT_RESTRICT    0x0400  /* restrict modifier */
 #define VT_QUAL        (VT_CONSTANT | VT_VOLATILE | VT_RESTRICT)
-#define VT_VLA         0x0800  /* VLA type (also has VT_PTR and VT_ARRAY) */
+#define VT_VLA         0x0800  /* VLA type (also has VT_PTR) */
+#define VT_ARRAY_MASK  (VT_ARRAY | VT_VLA)
 #define VT_LONG        0x1000  /* long type (also has VT_INT rsp. VT_LLONG) */
 
 /* storage */
