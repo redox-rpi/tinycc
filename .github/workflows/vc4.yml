@@ -8,6 +8,14 @@ on:
   pull_request:
   push:
     branches: [ main ]
+  # also run by upstream-sync.yml on its merge branch (PRs opened by the
+  # workflow token start no pull_request runs)
+  workflow_call:
+    inputs:
+      ref:
+        description: branch or commit to test
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -18,6 +26,8 @@ jobs:
     timeout-minutes: 10
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.ref }}
     - name: make test
       run: ./configure && make -j"$(nproc)" && make test -k
     - name: make test with -DTCC_LOOP_ROTATE (also both tccb stages)
@@ -31,6 +41,8 @@ jobs:
     timeout-minutes: 20
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.ref }}
     - name: pins
       run: cat tests/vc4/ci/pins.sh | grep -v '^#' | grep = >> "$GITHUB_ENV"
     - uses: actions/checkout@v4
@@ -71,3 +83,7 @@ jobs:
       run: tests/vc4/fat-sim.sh rof "$P" "$E"
     - name: bootcode-build LINK=tcc
       run: LINK=tcc tests/vc4/bootcode-build.sh rof "$P"
+    - name: fb-sim (B3s)
+      run: |
+        git -C rof worktree add -q "$RUNNER_TEMP/rof-fb" "$FB_REV"
+        BENCH=1 tests/vc4/fb-sim.sh "$RUNNER_TEMP/rof-fb" "$P" "$E"

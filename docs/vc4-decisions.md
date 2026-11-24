@@ -1,7 +1,8 @@
 # TinyCC VC4: decisions and licence
 
 Why this fork exists, what was decided and what we learned on the way.
-The parts of the backend: [vc4-components.md](vc4-components.md). Build
+The parts of the backend: [vc4-components.md](vc4-components.md). What each
+further optimisation would gain: [vc4-optimisations.md](vc4-optimisations.md). Build
 commands and numbers: [`README-vc4.md`](../README-vc4.md). Background and
 the alternatives that were considered (LLVM, a newer GCC): rpi-open-firmware
 [vpu-compiler.md](https://github.com/redox-rpi/rpi-open-firmware/blob/redox-rpi/docs/vpu-compiler.md).
@@ -13,9 +14,23 @@ One small compiler that builds the VPU part of the open Pi firmware
 (rpi-open-firmware `bootcode/`), first on the build host and later on the
 Pi under Redox, where TinyCC already runs (redox-rpi experiment `tcc`).
 It is an investment in our own, independent toolchain: the firmware is
-built with GCC 6.2.1, and vc4-tcc is tested next to it. Switching is a
-separate decision of the maintainer (by RFC); there are no switch criteria
-yet. Size and speed against GCC are tracked as KPIs, not targets.
+built with GCC 6.2.1, and vc4-tcc is tested next to it.
+
+Targets and switching (draft, maintainer 2026-11-17):
+- The firmware stays on GCC as long as vc4-tcc is not at least as good.
+- The targets in [#13](https://github.com/redox-rpi/tinycc/issues/13)
+  (REQ-TCCVC-3: B1–B4 against GCC `-Os`/`-O2`) are an intermediate goal.
+  They set the order of the work; they are not a plan to switch.
+- Once vc4-tcc is better than GCC, at least under some conditions,
+  shipping the firmware built with vc4-tcc can be considered, possibly
+  only for those conditions. That is the maintainer's decision, by RFC.
+- What will run on the VPU is still open (the BCM2837 has two VPU cores),
+  so the benchmarks follow the real VPU workloads as they appear. Optimisation work
+  ([#16](https://github.com/redox-rpi/tinycc/issues/16)) keeps the use of
+  both cores in mind.
+
+The KPIs ([#8](https://github.com/redox-rpi/tinycc/issues/8)) track size
+and speed against GCC; the targets are in #13.
 
 ## Decisions
 
@@ -23,6 +38,7 @@ yet. Size and speed against GCC are tracked as KPIs, not targets.
 |---|---|
 | Where | This repository, a real fork of TinyCC `mob`, not a folder in the firmware repository. The firmware build points at a fixed commit (pinned in [redox-rpi/vc4-toolchain](https://github.com/redox-rpi/vc4-toolchain)). |
 | Branches | `mob` is upstream, unchanged; `main` is our fork. Changes reach `main` by PR, reviewed by the coordinator or Quality and merged by the maintainer. Docs go straight to `main`. |
+| Upstream | Upstream `mob` (repo.or.cz) is merged into `main` every week: the `upstream-sync` workflow (Monday 06:00 UTC, or by hand) test-merges it, runs the `vc4` workflow's tests on the result and offers it as a PR "upstream sync YYYY-Www" on branch `upstream-sync/YYYY-Www`; a conflict becomes an issue. It never merges; the maintainer merges with a merge commit (no squash), so upstream's commits keep their hashes. It also keeps this repository's `mob` equal to upstream. The aarch64 TCC-on-Redox track uses the same fork, so arm64 changes are flagged in the PR. |
 | Redox patches | The four patches of the redox-rpi `tcc` experiment move into this fork later, as a separate step. |
 | Generic code | Changes outside the VC4 files stay small and, where they change behaviour, limited to VC4 or behind a define (`TCC_LOOP_ROTATE`); `README-vc4.md` lists them. |
 | Objects | ELF `EM_VIDEOCORE3` (137) with RELA relocations and the relocation numbers of the vc4 binutils, so TCC and GCC objects link together with either linker. |
@@ -73,8 +89,12 @@ About the VPU and its toolchain:
 About the simulator:
 - resim's `asr` was wrong for negative values and for a shift by 0, and
   `switch`, `bitflip` and `abs` were missing; fixed in redox-rpi/resim.
+- resim's `signext rd,ra,#n` sign-extended from bit n-1; the hardware
+  and GCC use bit n (`signext r,7` for `signed char`, `signext r,0` for
+  `-(x & 1)`). GCC's `crc32` was wrong in resim too. Fixed in
+  [resim#2](https://github.com/redox-rpi/resim/pull/2).
 - resim has no `ldsb`, so vc4-tcc loads signed bytes with `ldb` plus
-  `shl`/`asr`. GCC uses `ldsb`, so it is safe on the Pi; going back to it
+  `signext`. GCC uses `ldsb`, so it is safe on the Pi; going back to it
   saves 2 bytes per load once the simulator has it.
 - `stm r6-r7,lr` puts lr at the top in resim (the order is not
   documented). Normal functions only pair `stm` with `ldm`, so the order

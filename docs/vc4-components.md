@@ -63,6 +63,10 @@ for expressions; r6 is a scratch register; r7 is the frame pointer.
 **Frame:** the prologue is `stm r6-r7,lr,(--sp)`, then `add r7,sp,-64`,
 then `add sp,#-size`. r7 points 64 bytes below the top of the frame, so
 the first 16 locals are in reach of the short 16-bit `ld/st rd,(r7+0..60)`.
+A function that never reads r7 has no frame (#16): the two `add`s are
+dropped at the end of the function and the epilogue does not restore sp.
+A leaf function with nothing to save has no `stm`/`ldm` at all and ends
+in `rts`.
 
 **Optimisations** (all inside the backend unless noted):
 - *Register variables.* Before a function is compiled, `tccgen.c` scans
@@ -73,6 +77,19 @@ the first 16 locals are in reach of the short 16-bit `ld/st rd,(r7+0..60)`.
   widened in place to `stm r6-r(7+n),lr` (and the epilogue's `ldm` too),
   so functions without register variables cost nothing extra. Not used in
   variadic functions, functions with stack arguments or with inline asm.
+  A parameter used once counts as used twice: it arrives in a register,
+  and moving it to r8.. costs no more than storing it (#16).
+- *Leaf functions* (#16): the same scan notes whether the body may call
+  (a name, `]` or a non-cast `)` before `(`; an initializer or compound
+  literal; struct/union, `long long` or floating point types, also
+  through pointers and typedefs). A `{` after an if/while/for/switch
+  header and `(T *)(addr)` casts (the firmware's `HW_REGISTER` macros) do
+  not count; `goto` makes a function not a leaf. In a leaf the first four
+  parameters the scan picked stay in r0–r3, picked locals take what the
+  parameters leave of r0–r3, and those registers are then not allocated
+  for expressions (r4, r5 remain). A store to a fixed address uses a free
+  temporary instead of r6. A call that still comes in such a function
+  stops the compile with an internal error, never wrong code.
 - *Loop rotation* (`tccgen.c`): the loop condition is compiled after the
   body as "jump back if true", so one jump per iteration instead of three.
 - *Fused loop branch:* `add rd,#i; cmp rd,rs; b<cc> top` at the end of a
@@ -86,6 +103,24 @@ the first 16 locals are in reach of the short 16-bit `ld/st rd,(r7+0..60)`.
 - *Store-to-load forwarding:* `st rX,(r7+n)` directly followed by
   `ld rY,(r7+n)` becomes `mov rY,rX`, unless a jump target lies between.
 - *Indexed bytes:* `p[i]` for bytes is one `ldb rd,(ra+rb)`.
+- *Post-increment* ([#16](https://github.com/redox-rpi/tinycc/issues/16)):
+  `*p++ = v` and `v = *p++` with p in a register variable are one
+  `st/ld v,(rp++)`. `p++` leaves the old value as rp itself and the
+  increment pending; a load or store through it folds the increment in,
+  anything else that could see p first emits the `add`.
+- *Fused compare and branch* (#16): at the end of each function
+  (`vc4_relax`) `cmp ra,rb|#imm; b<cc> L` becomes one
+  `b<cc> ra,rb|#imm,L` where it reaches (ra, rb in r0–r15, imm 0..63,
+  ±1 KB or ±256 bytes with imm), and other jumps within ±128 bytes become
+  16-bit. Forward targets are unknown while the code is emitted, so every
+  jump is first 32-bit; relaxation only shrinks code, sites that no
+  longer reach go back to the longer form until nothing changes. Skipped
+  for functions with inline asm, debug or coverage code or labels whose
+  address is taken. The loop-end test also uses the `#imm` form. An
+  unconditional jump to the next instruction is dropped.
+- *Idioms* (#16): `-x` is `neg`, `-(x & 1)` is `signext rd,ra,0`,
+  `(x << c) >> c` is `bmask`/`signext`, signed byte loads and casts are
+  `ldb` + `signext r,7`.
 
 Not supported yet: float, `long long` beyond what the firmware needs,
 struct arguments, VLAs.
@@ -125,7 +160,8 @@ for that (fat-boot a8bcbe7).
 Kept small and, where they change behaviour, limited to VC4 or behind a
 define (list in `README-vc4.md`):
 - `tccgen.c`: loop rotation (VC4, or any target with
-  `-DTCC_LOOP_ROTATE`); the register-variable scan and hooks (VC4 only);
+  `-DTCC_LOOP_ROTATE`); the register-variable scan, its leaf test and
+  hooks (VC4 only); `tcc.h`: `reg_classes` is not `const` for VC4;
   `__attribute__((section))` on a prototype also applies to the
   definition, as in GCC.
 - `tccasm.c`: `.irp`, `.incbin`; `.align N` means 2^N bytes for VC4.
@@ -148,7 +184,9 @@ Test programs print through a simulated mini UART. Our fork adds:
 - builds with current g++ and CMake 4
 
 Known gaps: no `ldsb` (so vc4-tcc loads signed bytes with `ldb` plus
-shifts) and no vector instructions.
+`signext`) and no vector instructions. `signext rd,ra,#n` sign-extends
+from bit n (GCC's `signext r,7` for `signed char`); resim used n-1 until
+[resim#2](https://github.com/redox-rpi/resim/pull/2).
 resim runs about 20 M VC4 instructions per second per core.
 
 ## Tests (`tests/vc4`)
@@ -158,6 +196,7 @@ resim runs about 20 M VC4 instructions per second per core.
 | `enc-test.py` (+ `enc-test.c`) | every instruction form against the GNU assembler and disassembler |
 | `asm-test.sh` (+ `asm-test.S`) | about 90 instructions and the data directives give the same bytes as `vc4-elf-as` |
 | `abi-sim.sh` (+ `abi-test.c`, `abi-main.c`) | the same program on the host and as TCC code in resim must print the same: variadic calls (also from GCC code), 8 arguments, narrow types, div/mod, shifts, switch, loops, recursion, struct return, function pointers, address-taken loop variables, `asr` by 0 |
+| `fb-sim.sh` (+ `fb-sim-main.c`) | the firmware's frame buffer pattern and `crc32` (B3s of #13), built by TCC and by GCC `-Os`, in resim must print what a host build prints; `BENCH=1` counts instructions |
 | `fat-sim.sh` (+ `fat-sim-main.c`) | the firmware's `fat.c` from TCC reads FAT16 and FAT32 card images in resim; `BENCH=1` counts instructions, `PROF=dir` per function |
 | `bootcode-build.sh` | the firmware's whole `bootcode/` from TCC, sizes against GCC; `LINK=tcc` also links it with TCC and checks `linker.ld`'s limits (12 KB stack, trampoline ≤ 2 KB) on the map |
 | `tests2-diff.sh` | TinyCC's own test programs (tests/tests2) in resim, compiled by this build and by a reference build; outputs must match |

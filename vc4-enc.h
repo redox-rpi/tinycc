@@ -156,6 +156,13 @@ static inline void vc4_ldst32(int sz, int rd, int ra, int off)
 }
 
 /* b<cc> ra, rb, target  (ra, rb in r0..r15; off in bytes, +-1 KiB) */
+/* ld/st rd,(ra++): access, then ra += the access size */
+static inline void vc4_ldst_postinc(int sz, int rd, int ra)
+{
+    VC4_EMIT16(0xa500 | sz << 5 | rd);
+    VC4_EMIT16(ra << 11 | VC4_AL << 7);
+}
+
 static inline void vc4_bcmp_reg(int cc, int ra, int rb, int off)
 {
     VC4_EMIT16(0x8000 | cc << 8 | ra);
@@ -166,6 +173,20 @@ static inline void vc4_bcmp_reg(int cc, int ra, int rb, int off)
 static inline void vc4_bcmp_imm(int cc, int ra, int imm, int off)
 {
     VC4_EMIT16(0x8000 | cc << 8 | ra);
+    VC4_EMIT16(0xc000 | imm << 8 | ((off >> 1) & 0xff));
+}
+
+/* addcmpb<cc> ra,#i,rb|#uimm6,target: ra += i (-8..7), then compare and
+   branch (off in bytes from the instruction, +-1 KB or +-256 bytes) */
+static inline void vc4_addcmpb_reg(int cc, int ra, int i, int rb, int off)
+{
+    VC4_EMIT16(0x8000 | cc << 8 | (i & 15) << 4 | ra);
+    VC4_EMIT16(0x4000 | rb << 10 | ((off >> 1) & 0x3ff));
+}
+
+static inline void vc4_addcmpb_imm(int cc, int ra, int i, int imm, int off)
+{
+    VC4_EMIT16(0x8000 | cc << 8 | (i & 15) << 4 | ra);
     VC4_EMIT16(0xc000 | imm << 8 | ((off >> 1) & 0xff));
 }
 

@@ -930,6 +930,9 @@ ST_FUNC void vpop(void)
         gsym(vtop->jtrue);
         gsym(vtop->jfalse);
     }
+#ifdef TCC_TARGET_VC4
+    vc4_vpop();   /* a dropped p++ still increments p */
+#endif
     vtop--;
 }
 
@@ -6117,6 +6120,9 @@ ST_FUNC void unary(void)
             mk_pointer(&s->type);
             s->type.t |= VT_STATIC;
         }
+#ifdef TCC_TARGET_VC4
+        vc4_note_label_addr();
+#endif
         vpushsym(&s->type, s);
         next();
         break;
@@ -7360,6 +7366,9 @@ static void block(int flags)
     Sym *s;
 
 again:
+#ifdef TCC_TARGET_VC4
+    vc4_inc_flush();   /* no pending p++ across statements */
+#endif
     t = tok;
     /* If the token carries a value, next() might destroy it. Only with
        invalid code such as f(){"123"4;} */
@@ -8893,17 +8902,38 @@ static void sym_push_params(Sym *ref)
    body is then compiled from the saved tokens. */
 ST_DATA int regvar_ids[REGVAR_MAX];
 ST_DATA int nb_regvar_ids;
+ST_DATA int regvar_leaf;
 
-static TokenString *regvar_scan_body(void)
+/* a type whose use may need a helper call (memmove for a struct copy,
+   long long and floating point helpers) */
+static int regvar_type_calls(CType *type)
+{
+    int bt;
+    while ((bt = type->t & VT_BTYPE) == VT_PTR)
+        type = pointed_type(type);
+    return bt == VT_STRUCT || bt == VT_LLONG || bt == VT_QLONG
+        || is_float(bt);
+}
+
+static TokenString *regvar_scan_body(Sym *func)
 {
     TokenString *body = tok_str_alloc();
     struct { int id, w, out; } *v = NULL;
     int nv = 0, i, j, level = 0, plevel = 0, prev = 0, amp = 0, asm_level = -1;
     int depth = 0, loop_level[16], nloop = 0, hdr = -1, want_body = 0, has_asm = 0;
     int stmt_level[16], nstmt = 0;
+    /* ctl[l]: the '(' at paren level l follows if/while/for/switch, so a
+       '{' after its ')' is a statement, not a compound literal */
+    unsigned char ctl[32], cast[32];
+    int ctl_close = 0, cast_close = 0;
     Sym *s;
 
     nb_regvar_ids = 0;
+    /* leaf: the scan sees no call. Anything that might call (a name or ')'
+       or ']' before '(', initializers, struct, long long and floating
+       point types) makes it not a leaf, and so does goto; gfunc_call()
+       stops with an error if a call still comes */
+    regvar_leaf = 1;
     for (;;) {
         int t = tok;
         if (t == TOK_EOF)
@@ -8927,10 +8957,36 @@ static TokenString *regvar_scan_body(void)
                 nloop--, depth--;
         }
         want_body = 0;
+        /* a group that starts with a type is a cast: "(T *)(x)" is no call */
+        if (prev == '(' && plevel >= 1 && plevel <= 32)
+            cast[plevel - 1] = t == TOK_CONST1 || t == TOK_VOLATILE1
+                || t == TOK_UNSIGNED || t == TOK_SIGNED1 || t == TOK_VOID
+                || t == TOK_CHAR || t == TOK_INT || t == TOK_SHORT
+                || t == TOK_LONG || t == TOK_BOOL
+                || (t >= TOK_UIDENT && (s = sym_find(t))
+                    && (s->type.t & VT_TYPEDEF));
+        if ((t == '(' && (prev >= TOK_UIDENT || prev == ']'
+                          || (prev == ')' && !cast_close)))
+            || ((t == '{' || t == TOK_STR)
+                && (prev == '=' || (prev == ')' && !ctl_close)))
+            || t == TOK_STRUCT || t == TOK_UNION || t == TOK_FLOAT
+            || t == TOK_DOUBLE || t == TOK_CLLONG || t == TOK_CULLONG
+            || t == TOK_CFLOAT || t == TOK_CDOUBLE || t == TOK_CLDOUBLE
+            || (t == TOK_LONG && prev == TOK_LONG)
+            /* a goto back over a declaration would find a local's r0-r3
+               used as a temporary there */
+            || t == TOK_GOTO
+            || (t >= TOK_UIDENT && (s = sym_find(t)) && regvar_type_calls(&s->type)))
+            regvar_leaf = 0;
         if (t == '(') {
+            if (plevel >= 0 && plevel < 32)
+                ctl[plevel] = prev == TOK_IF || prev == TOK_WHILE
+                    || prev == TOK_FOR || prev == TOK_SWITCH, cast[plevel] = 0;
             plevel++;
         } else if (t == ')') {
             plevel--;
+            ctl_close = plevel >= 0 && plevel < 32 && ctl[plevel];
+            cast_close = plevel >= 0 && plevel < 32 && cast[plevel];
             if (asm_level == plevel)
                 asm_level = -1;
             if (hdr == plevel) {     /* end of a for/while header */
@@ -8973,6 +9029,14 @@ static TokenString *regvar_scan_body(void)
             break;
     }
     tok_str_add(body, TOK_EOF);
+    if (has_asm)
+        regvar_leaf = 0;
+    /* parameters used once count as twice: they arrive in a register,
+       and moving them to r8.. costs no more than storing them */
+    for (s = func->type.ref->next; s; s = s->next)
+        for (i = 0; i < nv; i++)
+            if (v[i].id == (s->v & ~SYM_FIELD) && v[i].w == 1)
+                v[i].w = 2;
     /* the REGVAR_MAX heaviest, used at least twice; none with inline asm,
        which may use r8-r15 */
     while (!has_asm && nb_regvar_ids < REGVAR_MAX) {
@@ -9031,7 +9095,7 @@ static void gen_function(Sym *sym)
     nb_temp_local_vars = 0;
 
 #ifdef TCC_TARGET_VC4
-    TokenString *body = regvar_scan_body();
+    TokenString *body = regvar_scan_body(sym);
     unget_tok(0);
     begin_macro(body, 1);
     next();
