@@ -28,12 +28,12 @@ addresses so a build script can do such checks.
 | `vc4-link.c` | relocations (`R_VC4_32`, `IMM32`, `PCREL27_MUL2`, `PCREL23_MUL2`, `PCREL27`) |
 | `tests/vc4/enc-test.py` | every encoder form against `vc4-elf-objdump` and, where it picks the same form, `vc4-elf-as` |
 | `tests/vc4/asm-test.sh`, `asm-test.S` | the assembler against `vc4-elf-as`: both objects linked at the same addresses must give the same bytes |
-| `tests/vc4/bootcode-build.sh` | compiles the firmware's `bootcode/` C and `.S` files (all, or `TCC_FILES=…`), compares sizes with GCC `-Os` per file, links them into the bootcode build with vc4-elf-ld, or with `LINK=tcc` by vc4-tcc (linker.ld's checks done on the `-Wl,-Map` output) |
+| `tests/vc4/bootcode-build.sh` | compiles the firmware's `bootcode/` C and `.S` files (all, or `TCC_FILES=…`), compares sizes with GCC `-Os` per file and with a second GCC build at `-O2` (the speed baseline of [#13](https://github.com/redox-rpi/tinycc/issues/13); `GCC_O2=0` skips it, `KEEP=dir` keeps both GCC images), links them into the bootcode build with vc4-elf-ld, or with `LINK=tcc` by vc4-tcc (linker.ld's checks done on the `-Wl,-Map` output) |
 | `tests/vc4/abi-sim.sh`, `abi-test.c`, `abi-main.c` | ABI and code generation test: the host build and the TCC build run in resim must print the same |
 | `tests/vc4/sim-rt.c` | `printf` on the mini UART for test programs in resim |
 | `tests/vc4/sim-crt.S`, `sim-libc.c` | start file and `mem*`/`strlen` for test programs built and linked by vc4-tcc alone; `abi-sim.sh` and `fat-sim.sh` run such an "all TCC" build too |
 | `tests/vc4/fb-sim.sh`, `fb-sim-main.c` | the firmware's `fb_pattern` and `crc32` (B3s of tinycc#13), built by vc4-tcc and by GCC `-Os`, in resim against a host build; `BENCH=1` prints the instruction counts |
-| `tests/vc4/fat-sim.sh`, `fat-sim-main.c` | runs TCC's `fat.c` in the resim simulator (vc4emul) on FAT16 and FAT32 card images; every file must load with the right size and checksum |
+| `tests/vc4/fat-sim.sh`, `fat-sim-main.c` | runs TCC's `fat.c` in the resim simulator (vc4emul) on FAT16 and FAT32 card images; every file must load with the right size and checksum; `BENCH=1` counts the instructions of `fat.c` from GCC `-Os`, GCC `-O2` and TCC (benchmark B4) |
 
 ## Build and test
 
