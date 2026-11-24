@@ -31,7 +31,8 @@ fw=$(cd "$1" && pwd)
 prefix=${2:-vc4-elf-}
 newlib=$(dirname "$(dirname "$(command -v "${prefix}gcc")")")/vc4-elf/include
 out=$(mktemp -d)
-trap 'rm -rf "$out"' EXIT
+o2=
+trap 'rm -rf "$out" ${o2:+"$o2"}' EXIT
 
 [ -e "$fw/firmware" ] || ln -s . "$fw/firmware"
 cd "$fw/bootcode"
@@ -46,15 +47,15 @@ eval "set -- $(make -pn MONITOR=1 CROSS_COMPILE="$prefix" 2>/dev/null | sed -n '
 for a; do case $a in -DBUILD_ID=*) ;; -D*) defs+=("$a") ;; esac; done
 [ ${#defs[@]} -gt 0 ] || { echo "no -D options in bootcode/Makefile's CFLAGS (make -pn found no 'CFLAGS :=' line?)" >&2; exit 1; }
 # the same bootcode with -O2: a copy of bootcode/ with the Makefile's -Os
-# changed, built against this checkout (FW_DIR)
-o2=
+# changed, next to bootcode/ so that its ../firmware includes resolve
 if [ "${GCC_O2:-1}" != 0 ]; then
-	o2=$out/o2
+	o2=$fw/bootcode-o2.tmp
+	rm -rf "$o2"
 	cp -r "$fw/bootcode" "$o2"
 	rm -rf "$o2/build"
 	sed -i 's/ -Os / -O2 /' "$o2/Makefile"
 	grep -q ' -O2 ' "$o2/Makefile" || { echo "bootcode/Makefile has no ' -Os ' to change" >&2; exit 1; }
-	make -s -C "$o2" MONITOR=1 CROSS_COMPILE="$prefix" FW_DIR="$fw" \
+	make -s -C "$o2" MONITOR=1 CROSS_COMPILE="$prefix" \
 		BUILD_ID="$(git -C "$fw" describe --always --dirty 2>/dev/null || echo unknown)-O2" >/dev/null
 fi
 files=${TCC_FILES:-$(cd build && ls *.c.o *.S.o | sed 's/\.c\.o$//; s/\.o$//')}
