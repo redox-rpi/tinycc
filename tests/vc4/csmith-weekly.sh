@@ -11,7 +11,11 @@
 #   CSMITH_WORK=dir      logs and kept programs, per week (default
 #                        ~/rbc-build/tcc-csmith-work)
 #   CSMITH_COUNT=n       programs (default 1000)
-#   VC4_PREFIX, VC4EMUL  toolchain prefix and resim's vc4emul
+#   VC4_PREFIX           toolchain prefix
+#   VC4EMUL              resim's vc4emul (default: built in $CSMITH_WORK/resim
+#                        at RESIM_REV of tests/vc4/ci/pins.sh, as in CI;
+#                        an older resim gives false mismatches, e.g. W48 with
+#                        upstream e9f04a3 and vc4-tcc's fused compare and branch)
 #   PI_TESTS_CLONE=dir   pi-tests clone (default ~/pi-tests-tcc; cloned if
 #                        missing)
 #   TOKEN_FILE=file      GitHub token for pi-tests (default
@@ -27,7 +31,7 @@ week=$(date -u +%G-W%V)
 work=${CSMITH_WORK:-$HOME/rbc-build/tcc-csmith-work}
 count=${CSMITH_COUNT:-1000}
 prefix=${VC4_PREFIX:-$HOME/rbc-build/toolchains/prefix/bin/vc4-elf-}
-emul=${VC4EMUL:-$HOME/rbc-build/tcc-vc4-tools/resim/vc4emul/vc4emul}
+emul=${VC4EMUL:-}
 tests=${PI_TESTS_CLONE:-$HOME/pi-tests-tcc}
 token=${TOKEN_FILE:-$HOME/.config/redox-rpi/github-token}
 log() { echo "$(date -u +%H:%M:%S) $*"; }
@@ -44,6 +48,21 @@ git -C "$root" checkout -q --detach "origin/$branch"
 [ -f "$root/config.mak" ] || (cd "$root" && ./configure --config-bcheck=no --config-backtrace=no > /dev/null)
 make -C "$root" -s vc4-tcc > /dev/null
 log "vc4-tcc $(git -C "$root" rev-parse --short=8 HEAD)"
+
+# The simulator CI uses (pins.sh), built once per pin in the work dir.
+if [ -z "$emul" ]; then
+	. "$root/tests/vc4/ci/pins.sh"
+	r=$work/resim
+	[ -d "$r/.git" ] || git clone -q "https://github.com/$RESIM_REPO" "$r"
+	if [ "$(git -C "$r" rev-parse HEAD)" != "$RESIM_REV" ] || [ ! -x "$r/build/vc4emul/vc4emul" ]; then
+		git -C "$r" fetch -q origin
+		git -C "$r" checkout -q --detach "$RESIM_REV"
+		cmake -S "$r" -B "$r/build" > /dev/null
+		make -C "$r/build" -s -j"$(nproc)" vc4emul > /dev/null
+	fi
+	emul=$r/build/vc4emul/vc4emul
+	log "resim $(git -C "$r" rev-parse --short=8 HEAD)"
+fi
 
 mkdir -p "$work/$week"
 cd "$work/$week"
