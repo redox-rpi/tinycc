@@ -45,6 +45,17 @@ git_auth() {
 log "csmith weekly $week, $branch, $count programs"
 git -C "$root" fetch -q origin
 git -C "$root" checkout -q --detach "origin/$branch"
+# The service runs a copy taken before this checkout: when the script
+# itself changed, go on with the new one (once), so a change to this file
+# counts from the run after its merge, not one week later.
+new=$root/tests/vc4/csmith-weekly.sh
+if [ -z "${CSMITH_REEXEC:-}" ] && ! cmp -s "$0" "$new"; then
+	copy=$(mktemp)
+	cp "$new" "$copy"
+	log "csmith-weekly.sh changed, going on with $(git -C "$root" rev-parse --short=8 HEAD)'s"
+	CSMITH_ROOT=$root CSMITH_BRANCH=$branch CSMITH_REEXEC=$copy exec bash "$copy"
+fi
+[ -z "${CSMITH_REEXEC:-}" ] || trap 'rm -f "$CSMITH_REEXEC"' EXIT
 [ -f "$root/config.mak" ] || (cd "$root" && ./configure --config-bcheck=no --config-backtrace=no > /dev/null)
 make -C "$root" -s vc4-tcc > /dev/null
 log "vc4-tcc $(git -C "$root" rev-parse --short=8 HEAD)"
